@@ -7,8 +7,11 @@
  *                "retryable": true, "fallbackToOtp": true } }
  *
  * `retryable` tells the caller whether retrying the same request may succeed.
- * `fallbackToOtp` tells the caller whether to fall back to an OTP challenge:
- * timeouts and upstream failures set it `true`, client errors set it `false`.
+ * `fallbackToOtp` tells the caller whether it can still complete the
+ * authorization another way, via an OTP challenge. Those are independent:
+ * an unexpected bug inside the relay (`INTERNAL`) is not retryable, but the
+ * caller must still fall back to OTP — our bug must never be the reason a
+ * customer cannot authorize a debit.
  */
 export type ErrorCode =
   | "UPSTREAM_TIMEOUT"
@@ -38,7 +41,7 @@ const DEFAULTS: Record<ErrorCode, ErrorDefaults> = {
   BAD_REQUEST: { httpStatus: 400, retryable: false, fallbackToOtp: false },
   NOT_FOUND: { httpStatus: 404, retryable: false, fallbackToOtp: false },
   UNAUTHORIZED: { httpStatus: 401, retryable: false, fallbackToOtp: false },
-  INTERNAL: { httpStatus: 500, retryable: false, fallbackToOtp: false },
+  INTERNAL: { httpStatus: 500, retryable: false, fallbackToOtp: true },
   NOT_IMPLEMENTED: { httpStatus: 501, retryable: false, fallbackToOtp: false },
 };
 

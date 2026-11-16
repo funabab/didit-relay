@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
-import { createLogger, type LogFields } from "../src/logging/logger";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  clearRegisteredSecrets,
+  createLogger,
+  registerSecret,
+  type LogFields,
+} from "../src/logging/logger";
 
 /** Logger wired to an in-memory sink; returns parsed JSON records. */
 function loggedRecords(
@@ -142,5 +147,57 @@ describe("logger redaction", () => {
       },
     });
     expect(() => logger.info("t", { a: 1 })).not.toThrow();
+  });
+
+  test("word-level scrubbing is lossy on purpose", () => {
+    const [record] = loggedRecords((log) =>
+      log("t", { err: new Error("Invalid token format") }),
+    );
+    const err = record?.["err"] as Record<string, unknown>;
+    expect(err["message"]).toBe("Invalid [REDACTED] format");
+  });
+});
+
+describe("registered secrets", () => {
+  // Fake key for tests, not a real secret. The registry is module-level, so
+  // isolate every test (other suites register their own placeholder keys).
+  const FAKE_KEY = "sk_live_abc123";
+
+  beforeEach(() => {
+    clearRegisteredSecrets();
+  });
+
+  afterEach(() => {
+    clearRegisteredSecrets();
+  });
+
+  test("scrubs a registered key quoted inside an error message", () => {
+    registerSecret(FAKE_KEY);
+    const lines: string[] = [];
+    const logger = createLogger({ level: "debug", sink: (line) => lines.push(line) });
+    logger.error("upstream failed", { err: new Error(`rejected key ${FAKE_KEY}`) });
+    const raw = lines.join("\n");
+    expect(raw).not.toContain(FAKE_KEY);
+    expect(raw).not.toContain("sk_live_");
+    expect(raw).toContain("[REDACTED]");
+  });
+
+  test("scrubs a registered key inside a plain msg string", () => {
+    registerSecret(FAKE_KEY);
+    const lines: string[] = [];
+    const logger = createLogger({ level: "debug", sink: (line) => lines.push(line) });
+    logger.error(`upstream failed: rejected key ${FAKE_KEY}`);
+    const raw = lines.join("\n");
+    expect(raw).not.toContain(FAKE_KEY);
+    expect(raw).not.toContain("sk_live_");
+  });
+
+  test("ignores values shorter than 4 characters", () => {
+    registerSecret("abc");
+    const lines: string[] = [];
+    const logger = createLogger({ level: "debug", sink: (line) => lines.push(line) });
+    logger.info("abc is ordinary text, not a secret");
+    const [record] = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(record?.["msg"]).toBe("abc is ordinary text, not a secret");
   });
 });

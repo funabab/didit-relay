@@ -10,7 +10,8 @@
  */
 import { loadConfig, type Config } from "./config";
 import { AppError, toErrorResponse } from "./http/errors";
-import { createLogger, type Logger } from "./logging/logger";
+import { drain } from "./lifecycle";
+import { createLogger, registerSecret, type Logger } from "./logging/logger";
 import { handleHealthz, handleReadyz } from "./routes/health";
 import { handlePassthrough } from "./routes/passthrough";
 
@@ -20,6 +21,8 @@ export interface App {
   readonly isReady: boolean;
   readonly config: Config | null;
   readonly configError: string | null;
+  /** Resolves when no request is in flight. Used by shutdown only. */
+  readonly waitForIdle: () => Promise<void>;
 }
 
 export interface CreateAppOptions {
@@ -36,6 +39,10 @@ function pathnameOf(req: Request): string {
   }
 }
 
+// Inbound request IDs are caller-controlled, so only this safe shape is
+// accepted; anything else is replaced with a generated UUID.
+const INBOUND_REQUEST_ID = /^[A-Za-z0-9._:-]{1,64}$/;
+
 export function createApp(
   env: Record<string, string | undefined>,
   options?: CreateAppOptions,
@@ -45,9 +52,39 @@ export function createApp(
   const configError = result.ok ? null : result.error;
   const isReady = result.ok;
   const logger = options?.logger ?? createLogger(result.ok ? { level: result.config.logLevel } : {});
+  if (result.ok) {
+    // Scrub the process's own key on every log line, even when no field of
+    // the current call carries it (e.g. quoted inside an upstream error).
+    registerSecret(result.config.diditApiKey);
+  }
+
+  let inFlight = 0;
+  let notifyIdle: (() => void) | null = null;
+  const waitForIdle = (): Promise<void> => {
+    if (inFlight === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      notifyIdle = resolve;
+    });
+  };
 
   const fetch = async (req: Request): Promise<Response> => {
-    const requestId = crypto.randomUUID();
+    inFlight += 1;
+    const inbound = req.headers.get("x-request-id");
+    let requestId: string;
+    let requestIdSource: "inbound" | "generated";
+    if (inbound !== null && INBOUND_REQUEST_ID.test(inbound)) {
+      requestId = inbound;
+      requestIdSource = "inbound";
+    } else {
+      requestId = crypto.randomUUID();
+      requestIdSource = "generated";
+      if (inbound !== null) {
+        // Never log the rejected value: it is attacker-controlled free text.
+        logger.debug("rejected inbound x-request-id", { requestId, requestIdSource });
+      }
+    }
     const startedAt = Date.now();
     const method = req.method;
     const path = pathnameOf(req);
@@ -77,11 +114,17 @@ export function createApp(
       return res;
     } finally {
       const durationMs = Date.now() - startedAt;
-      logger.info("request", { requestId, method, path, status, durationMs });
+      logger.info("request", { requestId, requestIdSource, method, path, status, durationMs });
+      inFlight -= 1;
+      if (inFlight === 0 && notifyIdle !== null) {
+        const notify = notifyIdle;
+        notifyIdle = null;
+        notify();
+      }
     }
   };
 
-  return { fetch, logger, isReady, config, configError };
+  return { fetch, logger, isReady, config, configError, waitForIdle };
 }
 
 // --- boot -----------------------------------------------------------------
@@ -101,20 +144,47 @@ if (import.meta.main) {
     fetch: app.fetch,
   });
   logger.info("server started", { port: config.port, nodeEnv: config.nodeEnv });
+  if (new URL(config.diditApiBase).protocol === "http:") {
+    logger.warn(
+      "DIDIT_API_BASE uses plaintext http (development); the API key will be sent unencrypted",
+    );
+  }
 
   let stopping = false;
+  let forcing = false;
   const shutdown = (signal: string): void => {
     if (stopping) {
+      // A second signal while draining forces immediate exit.
+      if (!forcing) {
+        forcing = true;
+        logger.warn("shutdown forced", { signal });
+      }
+      process.exit(1);
       return;
     }
     stopping = true;
-    logger.info("server stopping", { signal });
-    try {
-      server.stop(true);
-    } catch {
-      // Shutdown is best-effort; the process exits regardless.
-    }
-    process.exit(0);
+    void (async () => {
+      logger.info("server stopping", { signal });
+      const startedAt = Date.now();
+      let outcome: "drained" | "timeout";
+      try {
+        outcome = await drain({
+          timeoutMs: config.shutdownTimeoutMs,
+          stop: (force) => server.stop(force),
+          waitForIdle: app.waitForIdle,
+        });
+      } catch {
+        try {
+          server.stop(true);
+        } catch {
+          // Shutdown is best-effort; the process exits regardless.
+        }
+        outcome = "timeout";
+      }
+      const waitedMs = Date.now() - startedAt;
+      logger.info("server stopped", { signal, outcome, waitedMs });
+      process.exit(outcome === "drained" ? 0 : 1);
+    })();
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

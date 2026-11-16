@@ -90,3 +90,61 @@ describe("routing", () => {
     expect(res.headers.get("x-request-id")).toBeTruthy();
   });
 });
+
+describe("request id propagation", () => {
+  function appWithSink(): {
+    app: ReturnType<typeof createApp>;
+    lines: string[];
+  } {
+    const lines: string[] = [];
+    const app = createApp(
+      { ...VALID_ENV },
+      { logger: createLogger({ level: "debug", sink: (line) => lines.push(line) }) },
+    );
+    return { app, lines };
+  }
+
+  function accessRecord(lines: string[]): Record<string, unknown> {
+    const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const access = records.find((record) => record["msg"] === "request");
+    if (access === undefined) {
+      throw new Error("no access log line emitted");
+    }
+    return access;
+  }
+
+  test("a valid inbound id is echoed and logged as inbound", async () => {
+    const { app, lines } = appWithSink();
+    const inbound = "bank-trace_2024.11:7";
+    const res = await app.fetch(
+      new Request("http://localhost/healthz", {
+        method: "GET",
+        headers: { "x-request-id": inbound },
+      }),
+    );
+    expect(res.headers.get("x-request-id")).toBe(inbound);
+    const access = accessRecord(lines);
+    expect(access["requestId"]).toBe(inbound);
+    expect(access["requestIdSource"]).toBe("inbound");
+  });
+
+  test("junk and oversized inbound ids are replaced and never logged", async () => {
+    for (const inbound of ["a b/c", "x".repeat(65)]) {
+      const { app, lines } = appWithSink();
+      const res = await app.fetch(
+        new Request("http://localhost/healthz", {
+          method: "GET",
+          headers: { "x-request-id": inbound },
+        }),
+      );
+      const echoed = res.headers.get("x-request-id");
+      expect(echoed).toBeTruthy();
+      expect(echoed).not.toBe(inbound);
+      const raw = lines.join("\n");
+      expect(raw).not.toContain(inbound);
+      const access = accessRecord(lines);
+      expect(access["requestId"]).toBe(echoed);
+      expect(access["requestIdSource"]).toBe("generated");
+    }
+  });
+});

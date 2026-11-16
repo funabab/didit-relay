@@ -16,6 +16,14 @@
  * - strings longer than 2048 characters are truncated;
  * - the logger never throws: sanitisation and sink failures are swallowed.
  *
+ * Redaction is lossy on purpose. Error text is scrubbed at the word level,
+ * so "Invalid token format" becomes "Invalid [REDACTED] format". A mangled
+ * message is the accepted price of never leaking a secret; do not "fix" it.
+ *
+ * Long-lived secrets (notably the process's own `DIDIT_API_KEY`) are
+ * registered once via `registerSecret` and scrubbed on every scrub path even
+ * when no field of the current call carries them.
+ *
  * Callers must never pass request or response bodies to the logger.
  * Access logs carry method, path, status, duration and requestId only.
  */
@@ -58,6 +66,43 @@ const TRUNCATION_SUFFIX = "...[truncated]";
 // Values shorter than this are never treated as known secrets, so a short
 // redacted value cannot blank out unrelated log text.
 const MIN_SECRET_LENGTH = 4;
+
+// Process-wide registry for long-lived secrets such as DIDIT_API_KEY.
+// Per-call secrets only scrub text that arrived alongside the value; a key
+// quoted back inside an upstream error message would otherwise go to stdout
+// verbatim. In practice the registry holds exactly one value.
+const MAX_REGISTERED_SECRETS = 64;
+const registeredSecrets = new Set<string>();
+let registryFullWarned = false;
+
+/**
+ * Register a long-lived secret for scrubbing on every scrub path, in
+ * addition to per-call secrets. Values shorter than 4 characters are
+ * ignored. The registry holds at most 64 values; further values are dropped
+ * with a one-time warning, never silently.
+ */
+export function registerSecret(value: string): void {
+  if (typeof value !== "string" || value.length < MIN_SECRET_LENGTH) {
+    return;
+  }
+  if (registeredSecrets.has(value)) {
+    return;
+  }
+  if (registeredSecrets.size >= MAX_REGISTERED_SECRETS) {
+    if (!registryFullWarned) {
+      registryFullWarned = true;
+      logger.warn("secret registry full; ignoring additional secret");
+    }
+    return;
+  }
+  registeredSecrets.add(value);
+}
+
+/** Clear the registry (and the cap warning). For tests only. */
+export function clearRegisteredSecrets(): void {
+  registeredSecrets.clear();
+  registryFullWarned = false;
+}
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,
@@ -279,6 +324,11 @@ export function createLogger(options?: LoggerOptions): Logger {
         collectSecrets(bindings, secrets, new Set());
       } catch {
         // Secret collection is best-effort; sanitising still runs below.
+      }
+      // Registered secrets apply on every scrub path (plain strings via
+      // `sanitize`, `scrubErrorText`, and `msg`), after per-call secrets.
+      for (const secret of registeredSecrets) {
+        secrets.push(secret);
       }
       const record = sanitize(
         { level: entryLevel, time: new Date().toISOString(), msg, ...bindings, ...fields },

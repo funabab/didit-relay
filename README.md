@@ -57,11 +57,12 @@ docker compose up --build
 | - | - | - |
 | `DIDIT_API_KEY` | (required) | Missing or empty fails boot. Failure output states only whether it is present, never its value. |
 | `PORT` | `8080` | Integer 1-65535. |
-| `DIDIT_API_BASE` | `https://verification.didit.me` | Must be an http(s) URL. |
+| `DIDIT_API_BASE` | `https://verification.didit.me` | Must be an https URL, unless `NODE_ENV` is `development` or `test` (then `http:` is allowed with a boot-time warning). Must not contain credentials or a query string. |
 | `UPSTREAM_TIMEOUT_MS` | `1200` | Positive integer, milliseconds. |
 | `MEDIA_CACHE_DIR` | `./.cache/media` | Any non-empty path. |
 | `LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `NODE_ENV` | `development` | Any non-empty string. |
+| `SHUTDOWN_TIMEOUT_MS` | `10000` | Positive integer, milliseconds. How long shutdown waits for in-flight requests before force-closing. |
 
 ## Endpoints
 
@@ -72,7 +73,10 @@ docker compose up --build
 | any | `/v3/*` | Phase 0 stub: `501` with the error envelope. |
 | any | anything else | `404` with the error envelope. |
 
-Every response carries an `x-request-id` header.
+Every response carries an `x-request-id` header. When the inbound request supplies
+one in a safe shape (`[A-Za-z0-9._:-]{1,64}`), it is propagated and echoed;
+anything else is replaced with a generated UUID, and the access log records
+which happened in `requestIdSource` (`"inbound"` or `"generated"`).
 
 ## Error taxonomy
 
@@ -82,8 +86,12 @@ All errors use one envelope:
 { "error": { "code": "UPSTREAM_TIMEOUT", "message": "...", "retryable": true, "fallbackToOtp": true } }
 ```
 
-`fallbackToOtp` tells the caller whether to fall back to an OTP challenge. Timeouts and
-upstream failures set it `true`; client errors set it `false`.
+`retryable` describes whether the same request may succeed on retry.
+`fallbackToOtp` describes whether the caller can still complete the authorization
+another way, via an OTP challenge. Those are independent: `INTERNAL` is not
+retryable (the same request would hit the same bug), but it still sets
+`fallbackToOtp: true`, because an unexpected bug inside the relay must never be
+the reason a customer cannot authorize a debit.
 
 | Code | HTTP | `retryable` | `fallbackToOtp` |
 | - | - | - | - |
@@ -92,7 +100,7 @@ upstream failures set it `true`; client errors set it `false`.
 | `BAD_REQUEST` | 400 | false | false |
 | `NOT_FOUND` | 404 | false | false |
 | `UNAUTHORIZED` | 401 | false | false |
-| `INTERNAL` | 500 | false | false |
+| `INTERNAL` | 500 | false | true |
 | `NOT_IMPLEMENTED` | 501 | false | false |
 
 `NOT_IMPLEMENTED` is stub-only: it backs the phase 0 `/v3/*` stub.
@@ -115,16 +123,26 @@ It applies recursively through nested objects and arrays, to `Error.message` and
 serialise as `"[Circular]"`, strings over 2048 characters are truncated, and the logger
 never throws: a failed write cannot take down a request.
 
+The process's own `DIDIT_API_KEY` is registered for scrubbing at startup, so it is
+redacted everywhere it appears, even when quoted back inside an upstream error
+message that arrived without any field carrying it.
+
+Redaction is lossy on purpose: error text is scrubbed at the word level, so a
+message may come out mangled (for example `"Invalid token format"` becomes
+`"Invalid [REDACTED] format"`). Leaking a key is worse than a mangled message,
+so callers should treat `message` as human-readable text and never parse it.
+
 ## Layout
 
 ```
 src/config.ts              env parsing, validation, typed Config, fail fast at boot
 src/server.ts              Bun.serve, route table, graceful shutdown
+src/lifecycle.ts           drain helper for graceful shutdown (testable, no server handle)
 src/http/errors.ts         AppError hierarchy
 src/logging/logger.ts      structured JSON logger with recursive redaction
 src/routes/health.ts       GET /healthz, GET /readyz
 src/routes/passthrough.ts  stub only: responds 501
-tests/*.test.ts            bun test suite (health, config, errors, logger)
+tests/*.test.ts            bun test suite (health, config, errors, logger, lifecycle)
 Dockerfile                 bun-slim runtime image, non-root, healthchecked
 docker-compose.yml         local container run with a media-cache volume
 .env.example               documented defaults (copy to .env, never commit .env)

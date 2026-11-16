@@ -20,6 +20,7 @@ describe("config", () => {
       mediaCacheDir: "./.cache/media",
       logLevel: "info",
       nodeEnv: "development",
+      shutdownTimeoutMs: 10000,
     });
   });
 
@@ -31,7 +32,8 @@ describe("config", () => {
       UPSTREAM_TIMEOUT_MS: "5000",
       MEDIA_CACHE_DIR: "/tmp/media",
       LOG_LEVEL: "debug",
-      NODE_ENV: "production",
+      NODE_ENV: "development",
+      SHUTDOWN_TIMEOUT_MS: "3000",
     });
     expect(result.ok).toBe(true);
     if (!result.ok) {
@@ -40,6 +42,7 @@ describe("config", () => {
     expect(result.config.port).toBe(9000);
     expect(result.config.logLevel).toBe("debug");
     expect(result.config.upstreamTimeoutMs).toBe(5000);
+    expect(result.config.shutdownTimeoutMs).toBe(3000);
   });
 
   test("missing key fails with a single line that states presence, not value", () => {
@@ -91,5 +94,53 @@ describe("config", () => {
     }
     expect(result.config.port).toBe(8080);
     expect(result.config.logLevel).toBe("info");
+  });
+
+  test("http base is rejected outside development and test", () => {
+    for (const nodeEnv of ["production", "staging"]) {
+      const result = loadConfig({
+        ...KEY,
+        DIDIT_API_BASE: "http://localhost:9999",
+        NODE_ENV: nodeEnv,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain(
+          "DIDIT_API_BASE must use https (http: is only allowed when NODE_ENV is development or test).",
+        );
+      }
+    }
+  });
+
+  test("http base is accepted in development and test", () => {
+    for (const nodeEnv of ["development", "test"]) {
+      const result = loadConfig({
+        ...KEY,
+        DIDIT_API_BASE: "http://localhost:9999",
+        NODE_ENV: nodeEnv,
+      });
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("base with credentials or query is rejected outright", () => {
+    for (const base of ["https://user:pass@host", "https://host?x=1"]) {
+      const result = loadConfig({ ...KEY, DIDIT_API_BASE: base });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("DIDIT_API_BASE must not contain credentials or query");
+      }
+    }
+  });
+
+  test("malformed SHUTDOWN_TIMEOUT_MS fails without leaking values", () => {
+    for (const value of ["0", "-1", "abc"]) {
+      const result = loadConfig({ ...KEY, SHUTDOWN_TIMEOUT_MS: value });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("SHUTDOWN_TIMEOUT_MS");
+        expect(result.error).not.toContain("test-placeholder-key");
+      }
+    }
   });
 });

@@ -12,6 +12,12 @@ services:
     volumes:
       - media-cache:/app/.cache/media
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:'+(process.env['PORT']||'8080')+'/readyz').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
 
 volumes:
   media-cache:

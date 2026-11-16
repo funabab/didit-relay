@@ -4,6 +4,8 @@
  *
  * Rules:
  * - `DIDIT_API_KEY` is required and must be non-empty.
+ * - `DIDIT_API_BASE` must be https unless `NODE_ENV` is `development` or
+ *   `test`, and must never carry userinfo or a query string.
  * - Every other key has a default and is validated only when set to a
  *   non-empty value. Empty/unset optionals silently take the default.
  * - Failure messages never include any env value. They state only whether
@@ -20,6 +22,7 @@ export interface Config {
   mediaCacheDir: string;
   logLevel: LogLevel;
   nodeEnv: string;
+  shutdownTimeoutMs: number;
 }
 
 export type ConfigResult =
@@ -32,6 +35,7 @@ const DEFAULT_UPSTREAM_TIMEOUT_MS = 1200;
 const DEFAULT_MEDIA_CACHE_DIR = "./.cache/media";
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const DEFAULT_NODE_ENV = "development";
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
 
 const VALID_LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -69,6 +73,13 @@ export function loadConfig(env: Env): ConfigResult {
     port = parsed;
   }
 
+  // Parsed before DIDIT_API_BASE: the http(s) check depends on it.
+  let nodeEnv = DEFAULT_NODE_ENV;
+  const rawNodeEnv = env["NODE_ENV"];
+  if (!blank(rawNodeEnv)) {
+    nodeEnv = rawNodeEnv?.trim() as string;
+  }
+
   let diditApiBase = DEFAULT_DIDIT_API_BASE;
   const rawBase = env["DIDIT_API_BASE"];
   if (!blank(rawBase)) {
@@ -81,6 +92,15 @@ export function loadConfig(env: Env): ConfigResult {
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") {
       return fail(env, "DIDIT_API_BASE must be a valid http(s) URL.");
+    }
+    if (url.username !== "" || url.password !== "" || url.search !== "") {
+      return fail(env, "DIDIT_API_BASE must not contain credentials or query.");
+    }
+    if (url.protocol === "http:" && nodeEnv !== "development" && nodeEnv !== "test") {
+      return fail(
+        env,
+        "DIDIT_API_BASE must use https (http: is only allowed when NODE_ENV is development or test).",
+      );
     }
     diditApiBase = trimmed;
   }
@@ -114,10 +134,14 @@ export function loadConfig(env: Env): ConfigResult {
     logLevel = normalized as LogLevel;
   }
 
-  let nodeEnv = DEFAULT_NODE_ENV;
-  const rawNodeEnv = env["NODE_ENV"];
-  if (!blank(rawNodeEnv)) {
-    nodeEnv = rawNodeEnv?.trim() as string;
+  let shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS;
+  const rawShutdownTimeout = env["SHUTDOWN_TIMEOUT_MS"];
+  if (!blank(rawShutdownTimeout)) {
+    const parsed = Number(rawShutdownTimeout?.trim());
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return fail(env, "SHUTDOWN_TIMEOUT_MS must be a positive integer in milliseconds.");
+    }
+    shutdownTimeoutMs = parsed;
   }
 
   return {
@@ -130,6 +154,7 @@ export function loadConfig(env: Env): ConfigResult {
       mediaCacheDir,
       logLevel,
       nodeEnv,
+      shutdownTimeoutMs,
     },
   };
 }

@@ -1,0 +1,20 @@
+{
+  "name": "didit-relay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Relay between a bank-hosted mandate module and the Didit identity API (phase 0 scaffold).",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "scripts": {
+    "start": "bun src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.2"
+  }
+}

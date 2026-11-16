@@ -1,0 +1,17 @@
+services:
+  relay:
+    build: .
+    image: didit-relay
+    ports:
+      - "8080:8080"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "8080"
+    volumes:
+      - media-cache:/app/.cache/media
+    restart: unless-stopped
+
+volumes:
+  media-cache:

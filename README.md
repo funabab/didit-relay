@@ -17,6 +17,52 @@ and per-path `POST` idempotency; presigned media URLs in `2xx` JSON responses ar
 rewritten to signed links served from this relay at `GET /m/{token}`. Evidence
 storage (Phase 3) and webhooks are not implemented.
 
+## Design decisions worth defending
+
+**Why a relay instead of letting the bank call Didit.** The bank's perimeter allows one
+inbound IP and two domains it already trusts. The alternative was asking it to allowlist
+`verification.didit.me` and an undocumented media host, which is a change request through
+security review, and it hands the API key to a system outside our control. The relay is
+smaller than that conversation.
+
+**Why the key lives here and nowhere else.** The bank's authorization module never holds a
+Didit credential. A compromise inside the bank can spend nothing at Didit and cannot reach
+another tenant's data, and one key rotation is a relay deploy instead of a bank release.
+
+**Why the timeout is two numbers.** A create measured at 1.3–2.2 s and a decision read at
+~300 ms are not the same call, and one budget either cuts off the create or makes a hung
+read hold the mandate screen. Two measured budgets cost one config row each.
+
+**Why JSON errors pass through and HTML does not.** Didit's validation errors are field
+maps the caller must surface verbatim. Its unknown-path errors are Django HTML pages,
+which a JSON client must never receive as if it were an answer. Both are `4xx`; only one
+is ours to forward.
+
+**Why idempotency is in-process and what that costs.** A retried create with a freshly
+captured portrait is a duplicate authorization. The store is a `Map` with a TTL and a cap,
+which is correct for one instance and wrong for two — see what I would change below.
+
+**Why media URLs are rewritten by host, not by field name.** No completed session has been
+observed yet, so the field names are unknown. Matching the host cannot rewrite an API URL,
+because API hosts are not in the media list, and it keeps working when Didit renames a key.
+
+**Why there is no evidence store.** The bank already has an append-only store inside its
+perimeter and owns the retention policy. A second copy of biometrics in a new service adds
+breach surface and no capability.
+
+## What I would change before this carried real traffic
+
+- **Idempotency needs shared state.** A unique constraint on `(path, key)` in Postgres, or
+  Redis with the same semantics, so two instances cannot create two sessions for one key.
+- **Metrics and alerting.** There is none. A relay that silently retries, or whose key
+  expired, is invisible today; counters on `attempts`, `upstreamStatus` and `MEDIA_EXPIRED`
+  would be the first thing I added.
+- **Media bodies are buffered whole.** Fine for face crops, wrong for a 40 MB document
+  scan. Cap the buffered size and stream above it.
+- **Media URLs accept `http:`.** Needed for development, should be refused in production.
+- **No request-level rate limiting.** The body cap and the queue for in-flight idempotent
+  keys are the only backpressure that exists.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh) 1.4.x

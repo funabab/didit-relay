@@ -459,7 +459,7 @@ describe("timeout budget and retry", () => {
       await Bun.sleep(5000);
       return new Response("too late");
     });
-    const { app, lines } = testApp(upstream.baseUrl, { UPSTREAM_TIMEOUT_MS: "200" });
+    const { app, lines } = testApp(upstream.baseUrl, { UPSTREAM_WRITE_TIMEOUT_MS: "200" });
     const startedAt = Date.now();
     const res = await app.fetch(
       new Request("http://localhost/v3/session/", {
@@ -482,6 +482,44 @@ describe("timeout budget and retry", () => {
     expect(timeouts).toHaveLength(1);
     expect(timeouts[0]?.["code"]).toBe("UPSTREAM_TIMEOUT");
   });
+
+  test("a GET honours the read budget: a hang answers 504 at ~1500 ms", async () => {
+    const upstream = startFakeUpstream(async () => {
+      await Bun.sleep(15000);
+      return new Response("too late");
+    });
+    const { app, lines } = testApp(upstream.baseUrl);
+    const startedAt = Date.now();
+    const res = await app.fetch(new Request("http://localhost/v3/session/abc/decision/"));
+    const elapsedMs = Date.now() - startedAt;
+    expect(res.status).toBe(504);
+    expect((await errorBody(res)).code).toBe("UPSTREAM_TIMEOUT");
+    expect(elapsedMs).toBeGreaterThanOrEqual(1500 - 250);
+    expect(elapsedMs).toBeLessThan(1500 + 1500);
+    expect(singleAccessRecord(lines)["attempts"]).toBe(1);
+  });
+
+  test("a POST honours the write budget: a hang answers 504 at ~5000 ms", async () => {
+    const upstream = startFakeUpstream(async () => {
+      await Bun.sleep(15000);
+      return new Response("too late");
+    });
+    const { app, lines } = testApp(upstream.baseUrl);
+    const startedAt = Date.now();
+    const res = await app.fetch(
+      new Request("http://localhost/v3/session/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    const elapsedMs = Date.now() - startedAt;
+    expect(res.status).toBe(504);
+    expect((await errorBody(res)).code).toBe("UPSTREAM_TIMEOUT");
+    expect(elapsedMs).toBeGreaterThanOrEqual(5000 - 250);
+    expect(elapsedMs).toBeLessThan(5000 + 1500);
+    expect(singleAccessRecord(lines)["attempts"]).toBe(1);
+  }, 15000);
 
   test("GET is retried once on transport failure; attempts 2 is logged", async () => {
     const { app, lines } = testApp(deadBaseUrl());

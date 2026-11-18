@@ -12,9 +12,9 @@ Three jobs, built in phases:
 3. Store per-authorization evidence packs append-only, inside the bank's perimeter.
 
 Status: Phase 1 proxy. `GET`, `POST`, `PATCH` and `DELETE` under `/v3/*` are proxied
-to `DIDIT_API_BASE` with key injection, one timeout budget, read-only retry and
-per-path `POST` idempotency. Media re-serving (Phase 2), evidence storage (Phase 3)
-and webhooks are not implemented.
+to `DIDIT_API_BASE` with key injection, per-method timeout budgets, read-only retry
+and per-path `POST` idempotency. Media re-serving (Phase 2), evidence storage
+(Phase 3) and webhooks are not implemented.
 
 ## Prerequisites
 
@@ -59,7 +59,8 @@ docker compose up --build
 | `DIDIT_API_KEY` | (required) | Missing or empty fails boot. Failure output states only whether it is present, never its value. |
 | `PORT` | `8080` | Integer 1-65535. |
 | `DIDIT_API_BASE` | `https://verification.didit.me` | Must be an https URL, unless `NODE_ENV` is `development` or `test` (then `http:` is allowed with a boot-time warning). Must not contain credentials or a query string. |
-| `UPSTREAM_TIMEOUT_MS` | `1200` | Positive integer, milliseconds. |
+| `UPSTREAM_TIMEOUT_MS` | `1500` | Positive integer, milliseconds. Budget for `GET`/`HEAD` upstream calls. |
+| `UPSTREAM_WRITE_TIMEOUT_MS` | `5000` | Positive integer, milliseconds. Budget for `POST`/`PATCH`/`DELETE` upstream calls. |
 | `UPSTREAM_MAX_BODY_BYTES` | `8388608` | Positive integer, bytes. Inbound bodies past the cap answer `413` and the upstream is never called. |
 | `MEDIA_CACHE_DIR` | `./.cache/media` | Any non-empty path. |
 | `LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
@@ -133,8 +134,10 @@ allowlists exactly one host. The proxy:
   cookies, `authorization`, `content-length` and every `x-forwarded-*` are
   dropped (`x-forwarded-for` is set only to the observed socket address,
   when the server provides one);
-- enforces one deadline (`UPSTREAM_TIMEOUT_MS`) for the whole exchange,
-  covering time-to-response-headers; expiry answers `504 UPSTREAM_TIMEOUT`;
+- enforces the deadline for the method (`UPSTREAM_TIMEOUT_MS` for
+  `GET`/`HEAD`, `UPSTREAM_WRITE_TIMEOUT_MS` for `POST`/`PATCH`/`DELETE`)
+  for the whole exchange, covering time-to-response-headers; expiry
+  answers `504 UPSTREAM_TIMEOUT`;
 - retries `GET`/`HEAD` at most once, only on transport errors and upstream
   `502`/`503`/`504`, only with at least half the budget left — and never
   retries `POST`, `PATCH`, `DELETE` or `429`;
@@ -172,6 +175,25 @@ restart drops every record. Without the header, behaviour is unchanged.
   not bounded here.
 - Presigned media URLs inside JSON bodies are returned untouched; Phase 2
   handles them.
+
+## Verified against the live sandbox API
+
+Measured 2026-11-18 against `https://verification.didit.me`:
+
+| call | observed | default | basis |
+| - | - | - | - |
+| `POST /v3/session/` x8, with portrait | 2036 1426 1406 2024 1494 2229 1287 1440 ms | `UPSTREAM_WRITE_TIMEOUT_MS=5000` | >2x max (2229) |
+| `GET .../decision/` | ~300 ms | `UPSTREAM_TIMEOUT_MS=1500` | 5x observed |
+
+- A `biometric_authentication` create without a portrait is refused with
+  `400` (`portrait_image`); with one it returns `201` with `session_id`,
+  `url` and `expires_at`.
+- Three identical creates returned the same `session_id`: Didit
+  deduplicates identical payloads. The relay's `Idempotency-Key` is still
+  required, because a retry with a freshly captured portrait is not
+  byte-identical and would create a second session.
+- SIGTERM drain with a request in flight: signal at t0, request finished
+  at 3030 ms, `waitedMs 2010`, `outcome: "drained"`, exit 0.
 
 ## Logging
 

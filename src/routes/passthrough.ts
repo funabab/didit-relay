@@ -3,10 +3,11 @@
  * passes through here, because the bank allowlists exactly one host.
  *
  * Why this shape: the relay injects the API key (the caller never holds
- * it), enforces one time budget for the whole exchange, and guarantees a
- * failure here never blocks a debit — every outcome either carries
- * Didit's own answer or maps into the envelope with `fallbackToOtp` set
- * where the caller can still complete via OTP.
+ * it), enforces a per-method time budget for the whole exchange (reads
+ * under `UPSTREAM_TIMEOUT_MS`, writes under `UPSTREAM_WRITE_TIMEOUT_MS`),
+ * and guarantees a failure here never blocks a debit — every outcome
+ * either carries Didit's own answer or maps into the envelope with
+ * `fallbackToOtp` set where the caller can still complete via OTP.
  *
  * Pipeline order is fixed: path safety, body size, idempotency (POST),
  * forward, retry (reads only), map-or-stream. Each step short-circuits;
@@ -410,11 +411,12 @@ type ForwardResult =
   | { kind: "transport"; attempts: number; upstreamMs: number };
 
 /**
- * Run the upstream exchange under one deadline (`UPSTREAM_TIMEOUT_MS`)
- * covering time-to-response-headers. `GET`/`HEAD` are retried at most
- * once on transport errors and 502/503/504, and only when at least half
- * the budget remains; `POST`/`PATCH`/`DELETE` are never retried, and
- * neither is a 429.
+ * Run the upstream exchange under the deadline for its method
+ * (`UPSTREAM_TIMEOUT_MS` for `GET`/`HEAD`, `UPSTREAM_WRITE_TIMEOUT_MS`
+ * for everything else) covering time-to-response-headers. `GET`/`HEAD`
+ * are retried at most once on transport errors and 502/503/504, and only
+ * when at least half the budget remains; `POST`/`PATCH`/`DELETE` are
+ * never retried, and neither is a 429.
  */
 async function forwardWithRetry(
   method: string,
@@ -423,9 +425,9 @@ async function forwardWithRetry(
   body: Uint8Array<ArrayBuffer> | null,
   ctx: ProxyContext,
 ): Promise<ForwardResult> {
-  const budget = ctx.config.upstreamTimeoutMs;
-  const deadline = Date.now() + budget;
   const retryableMethod = method === "GET" || method === "HEAD";
+  const budget = retryableMethod ? ctx.config.upstreamTimeoutMs : ctx.config.upstreamWriteTimeoutMs;
+  const deadline = Date.now() + budget;
   const headers = buildUpstreamHeaders(inboundHeaders, ctx);
   const startedAt = Date.now();
   let attempts = 0;

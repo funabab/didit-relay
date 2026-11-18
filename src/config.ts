@@ -18,7 +18,10 @@ export interface Config {
   port: number;
   diditApiKey: string;
   diditApiBase: string;
+  /** Budget for `GET`/`HEAD` upstream calls (reads). */
   upstreamTimeoutMs: number;
+  /** Budget for `POST`/`PATCH`/`DELETE` upstream calls (writes). */
+  upstreamWriteTimeoutMs: number;
   upstreamMaxBodyBytes: number;
   mediaCacheDir: string;
   logLevel: LogLevel;
@@ -32,7 +35,15 @@ export type ConfigResult =
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_DIDIT_API_BASE = "https://verification.didit.me";
-const DEFAULT_UPSTREAM_TIMEOUT_MS = 1200;
+// Measured 2026-11-18 against the live sandbox API: eight
+// POST /v3/session/ creates with a real portrait took 2036 1426 1406 2024
+// 1494 2229 1287 1440 ms (min 1287, median ~1470, max 2229), and a
+// GET .../decision/ read took ~300 ms. The write budget is >2x the
+// observed create max; the read budget is 5x the observed read, so a hung
+// read hands the customer to OTP in about a second instead of holding
+// the mandate screen.
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 1500;
+const DEFAULT_UPSTREAM_WRITE_TIMEOUT_MS = 5000;
 const DEFAULT_UPSTREAM_MAX_BODY_BYTES = 8388608;
 const DEFAULT_MEDIA_CACHE_DIR = "./.cache/media";
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
@@ -117,6 +128,16 @@ export function loadConfig(env: Env): ConfigResult {
     upstreamTimeoutMs = parsed;
   }
 
+  let upstreamWriteTimeoutMs = DEFAULT_UPSTREAM_WRITE_TIMEOUT_MS;
+  const rawWriteTimeout = env["UPSTREAM_WRITE_TIMEOUT_MS"];
+  if (!blank(rawWriteTimeout)) {
+    const parsed = Number(rawWriteTimeout?.trim());
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return fail(env, "UPSTREAM_WRITE_TIMEOUT_MS must be a positive integer in milliseconds.");
+    }
+    upstreamWriteTimeoutMs = parsed;
+  }
+
   let upstreamMaxBodyBytes = DEFAULT_UPSTREAM_MAX_BODY_BYTES;
   const rawMaxBody = env["UPSTREAM_MAX_BODY_BYTES"];
   if (!blank(rawMaxBody)) {
@@ -163,6 +184,7 @@ export function loadConfig(env: Env): ConfigResult {
       diditApiKey: (rawKey as string).trim(),
       diditApiBase,
       upstreamTimeoutMs,
+      upstreamWriteTimeoutMs,
       upstreamMaxBodyBytes,
       mediaCacheDir,
       logLevel,

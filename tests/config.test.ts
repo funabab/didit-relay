@@ -16,7 +16,8 @@ describe("config", () => {
       port: 8080,
       diditApiKey: "test-placeholder-key",
       diditApiBase: "https://verification.didit.me",
-      upstreamTimeoutMs: 1200,
+      upstreamTimeoutMs: 1500,
+      upstreamWriteTimeoutMs: 5000,
       upstreamMaxBodyBytes: 8388608,
       mediaCacheDir: "./.cache/media",
       logLevel: "info",
@@ -31,6 +32,7 @@ describe("config", () => {
       PORT: "9000",
       DIDIT_API_BASE: "http://localhost:9999",
       UPSTREAM_TIMEOUT_MS: "5000",
+      UPSTREAM_WRITE_TIMEOUT_MS: "7000",
       UPSTREAM_MAX_BODY_BYTES: "1024",
       MEDIA_CACHE_DIR: "/tmp/media",
       LOG_LEVEL: "debug",
@@ -44,6 +46,7 @@ describe("config", () => {
     expect(result.config.port).toBe(9000);
     expect(result.config.logLevel).toBe("debug");
     expect(result.config.upstreamTimeoutMs).toBe(5000);
+    expect(result.config.upstreamWriteTimeoutMs).toBe(7000);
     expect(result.config.upstreamMaxBodyBytes).toBe(1024);
     expect(result.config.shutdownTimeoutMs).toBe(3000);
   });
@@ -165,5 +168,25 @@ describe("config", () => {
         expect(result.error).not.toContain("test-placeholder-key");
       }
     }
+  });
+
+  test("malformed UPSTREAM_WRITE_TIMEOUT_MS refuses boot without leaking values", () => {
+    for (const value of ["0", "-1", "1.5", "abc"]) {
+      const result = loadConfig({ ...KEY, UPSTREAM_WRITE_TIMEOUT_MS: value });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("UPSTREAM_WRITE_TIMEOUT_MS");
+        expect(result.error).not.toContain("test-placeholder-key");
+      }
+    }
+  });
+
+  test("blank UPSTREAM_WRITE_TIMEOUT_MS falls back to the default", () => {
+    const result = loadConfig({ ...KEY, UPSTREAM_WRITE_TIMEOUT_MS: "  " });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.config.upstreamWriteTimeoutMs).toBe(5000);
   });
 });

@@ -20,6 +20,7 @@ const CASES: {
   { code: "NOT_FOUND", httpStatus: 404, retryable: false, fallbackToOtp: false },
   { code: "UNAUTHORIZED", httpStatus: 401, retryable: false, fallbackToOtp: false },
   { code: "INTERNAL", httpStatus: 500, retryable: false, fallbackToOtp: true },
+  { code: "MEDIA_EXPIRED", httpStatus: 410, retryable: false, fallbackToOtp: false },
 ];
 
 describe("AppError taxonomy", () => {
@@ -49,7 +50,7 @@ describe("AppError taxonomy", () => {
     for (const code of ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR", "UPSTREAM_RATE_LIMITED", "INTERNAL"] as const) {
       expect(new AppError(code, "x").fallbackToOtp).toBe(true);
     }
-    for (const code of ["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "PAYLOAD_TOO_LARGE"] as const) {
+    for (const code of ["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "PAYLOAD_TOO_LARGE", "MEDIA_EXPIRED"] as const) {
       expect(new AppError(code, "x").fallbackToOtp).toBe(false);
     }
   });

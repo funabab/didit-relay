@@ -20,6 +20,12 @@ describe("config", () => {
       upstreamWriteTimeoutMs: 5000,
       upstreamMaxBodyBytes: 8388608,
       mediaCacheDir: "./.cache/media",
+      diditMediaHosts: [],
+      publicMediaBase: "",
+      mediaLinkTtlMs: 1800000,
+      mediaCacheEnabled: true,
+      mediaSigningSecret: "",
+      mediaCacheMaxBytes: 268435456,
       logLevel: "info",
       nodeEnv: "development",
       shutdownTimeoutMs: 10000,
@@ -188,5 +194,146 @@ describe("config", () => {
       return;
     }
     expect(result.config.upstreamWriteTimeoutMs).toBe(5000);
+  });
+
+  test("parses media overrides, normalising hosts and the base", () => {
+    const result = loadConfig({
+      ...KEY,
+      DIDIT_MEDIA_HOSTS: "Media.Example.com, 127.0.0.1 ,media.example.com",
+      PUBLIC_MEDIA_BASE: "https://assets.bank.example/",
+      MEDIA_LINK_TTL_MS: "60000",
+      MEDIA_CACHE_ENABLED: "FALSE",
+      MEDIA_SIGNING_SECRET: "media-test-secret-PLACEHOLDER",
+      MEDIA_CACHE_MAX_BYTES: "1024",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.config.diditMediaHosts).toEqual(["media.example.com", "127.0.0.1"]);
+    expect(result.config.publicMediaBase).toBe("https://assets.bank.example");
+    expect(result.config.mediaLinkTtlMs).toBe(60000);
+    expect(result.config.mediaCacheEnabled).toBe(false);
+    expect(result.config.mediaSigningSecret).toBe("media-test-secret-PLACEHOLDER");
+    expect(result.config.mediaCacheMaxBytes).toBe(1024);
+  });
+
+  test("empty media hosts or base still boots (rewriting inert, not invalid)", () => {
+    for (const env of [
+      { ...KEY, PUBLIC_MEDIA_BASE: "https://assets.bank.example" },
+      { ...KEY, DIDIT_MEDIA_HOSTS: "media.example.com" },
+    ]) {
+      const result = loadConfig(env);
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("blank media optionals fall back to defaults", () => {
+    const result = loadConfig({
+      ...KEY,
+      DIDIT_MEDIA_HOSTS: "  ",
+      PUBLIC_MEDIA_BASE: "",
+      MEDIA_LINK_TTL_MS: "",
+      MEDIA_CACHE_ENABLED: "  ",
+      MEDIA_SIGNING_SECRET: "",
+      MEDIA_CACHE_MAX_BYTES: "",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.config.diditMediaHosts).toEqual([]);
+    expect(result.config.publicMediaBase).toBe("");
+    expect(result.config.mediaLinkTtlMs).toBe(1800000);
+    expect(result.config.mediaCacheEnabled).toBe(true);
+    expect(result.config.mediaSigningSecret).toBe("");
+    expect(result.config.mediaCacheMaxBytes).toBe(268435456);
+  });
+
+  test("malformed DIDIT_MEDIA_HOSTS refuses boot without leaking values", () => {
+    for (const value of [
+      ",,,",
+      "not a host!",
+      "https://media.example.com",
+      "media.example.com/path",
+      "media.example.com:8080",
+      "user@media.example.com",
+      "bad..host",
+      "-leading.example.com",
+    ]) {
+      const result = loadConfig({ ...KEY, DIDIT_MEDIA_HOSTS: value });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("DIDIT_MEDIA_HOSTS");
+        expect(result.error).toContain("present: true");
+        expect(result.error).not.toContain("\n");
+        expect(result.error).not.toContain("test-placeholder-key");
+      }
+    }
+  });
+
+  test("malformed PUBLIC_MEDIA_BASE refuses boot without leaking values", () => {
+    for (const value of [
+      "not a url",
+      "ftp://assets.bank.example",
+      "https://assets.bank.example/media",
+      "https://assets.bank.example?x=1",
+      "https://user:pass@assets.bank.example",
+      "https://assets.bank.example#frag",
+    ]) {
+      const result = loadConfig({ ...KEY, PUBLIC_MEDIA_BASE: value });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("PUBLIC_MEDIA_BASE");
+        expect(result.error).not.toContain("\n");
+        expect(result.error).not.toContain("test-placeholder-key");
+      }
+    }
+  });
+
+  test("http PUBLIC_MEDIA_BASE follows the same dev/test rule as the API base", () => {
+    for (const nodeEnv of ["production", "staging"]) {
+      const result = loadConfig({
+        ...KEY,
+        PUBLIC_MEDIA_BASE: "http://assets.internal:8080",
+        NODE_ENV: nodeEnv,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("PUBLIC_MEDIA_BASE must use https");
+      }
+    }
+    for (const nodeEnv of ["development", "test"]) {
+      const result = loadConfig({
+        ...KEY,
+        PUBLIC_MEDIA_BASE: "http://assets.internal:8080",
+        NODE_ENV: nodeEnv,
+      });
+      expect(result.ok).toBe(true);
+    }
+  });
+
+  test("malformed media ttl, toggle and cache cap refuse boot", () => {
+    const cases: [string, string][] = [
+      ["MEDIA_LINK_TTL_MS", "0"],
+      ["MEDIA_LINK_TTL_MS", "-1"],
+      ["MEDIA_LINK_TTL_MS", "1.5"],
+      ["MEDIA_LINK_TTL_MS", "abc"],
+      ["MEDIA_CACHE_ENABLED", "yes"],
+      ["MEDIA_CACHE_ENABLED", "1"],
+      ["MEDIA_CACHE_ENABLED", "off"],
+      ["MEDIA_CACHE_MAX_BYTES", "0"],
+      ["MEDIA_CACHE_MAX_BYTES", "-5"],
+      ["MEDIA_CACHE_MAX_BYTES", "abc"],
+    ];
+    for (const [key, value] of cases) {
+      const result = loadConfig({ ...KEY, [key]: value });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain(key);
+        expect(result.error).not.toContain("\n");
+        expect(result.error).not.toContain("test-placeholder-key");
+      }
+    }
   });
 });

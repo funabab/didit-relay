@@ -12,8 +12,11 @@ import { loadConfig, type Config } from "./config";
 import { AppError, toErrorResponse } from "./http/errors";
 import { drain } from "./lifecycle";
 import { createLogger, registerSecret, type Logger } from "./logging/logger";
+import { MediaCache } from "./media/cache";
+import { resolveSigningKey } from "./media/links";
 import { IdempotencyStore } from "./proxy/idempotency";
 import { handleHealthz, handleReadyz } from "./routes/health";
+import { handleMedia, MEDIA_LOG_PATH } from "./routes/media";
 import { handleProxy } from "./routes/passthrough";
 
 /**
@@ -91,11 +94,26 @@ export function createApp(
     // Scrub the process's own key on every log line, even when no field of
     // the current call carries it (e.g. quoted inside an upstream error).
     registerSecret(result.config.diditApiKey);
+    // Same for the media signing secret when one is configured; the
+    // derived key (from the API key) is already covered via the key.
+    if (result.config.mediaSigningSecret !== "") {
+      registerSecret(result.config.mediaSigningSecret);
+    }
   }
 
   // One idempotency store per app: records never cross instances, and
   // tests get a fresh store per app instead of shared global state.
   const idempotency = new IdempotencyStore();
+  // Media state is likewise per app: one signing key and one cache, so
+  // tests get isolation instead of shared global state.
+  const signingKey = result.ok ? resolveSigningKey(result.config) : null;
+  const mediaCache = result.ok
+    ? new MediaCache({
+        baseDir: result.config.mediaCacheDir,
+        enabled: result.config.mediaCacheEnabled,
+        maxBytes: result.config.mediaCacheMaxBytes,
+      })
+    : null;
 
   let inFlight = 0;
   let notifyIdle: (() => void) | null = null;
@@ -137,7 +155,7 @@ export function createApp(
       } else if (method === "GET" && path === "/readyz") {
         res = handleReadyz(isReady, configError);
       } else if (path === "/v3" || path.startsWith("/v3/")) {
-        if (config === null) {
+        if (config === null || signingKey === null) {
           throw new AppError("INTERNAL", "relay is not configured");
         }
         const outcome = await handleProxy(req, {
@@ -146,6 +164,7 @@ export function createApp(
           requestId,
           store: idempotency,
           remoteAddr: remoteAddressOf(req, server),
+          signingKey,
         });
         proxyFields = {
           upstreamStatus: outcome.upstreamStatus,
@@ -156,6 +175,21 @@ export function createApp(
           proxyFields["replayed"] = true;
         }
         res = outcome.response;
+      } else if (path === "/m" || path.startsWith("/m/")) {
+        if (config === null || signingKey === null || mediaCache === null) {
+          throw new AppError("INTERNAL", "relay is not configured");
+        }
+        if (method !== "GET") {
+          throw new AppError("NOT_FOUND", `no route for ${method} ${MEDIA_LOG_PATH}`);
+        }
+        const token = path.startsWith("/m/") ? path.slice("/m/".length) : "";
+        res = await handleMedia(token, {
+          config,
+          logger,
+          requestId,
+          signingKey,
+          cache: mediaCache,
+        });
       } else {
         throw new AppError("NOT_FOUND", `no route for ${method} ${path}`);
       }
@@ -172,11 +206,13 @@ export function createApp(
       return res;
     } finally {
       const durationMs = Date.now() - startedAt;
+      // The /m/ path carries the link token, so it is never logged.
+      const logPath = path === "/m" || path.startsWith("/m/") ? MEDIA_LOG_PATH : path;
       logger.info("request", {
         requestId,
         requestIdSource,
         method,
-        path,
+        path: logPath,
         status,
         durationMs,
         ...(proxyFields ?? {}),

@@ -22,7 +22,8 @@ export type ErrorCode =
   | "NOT_FOUND"
   | "UNAUTHORIZED"
   | "INTERNAL"
-  | "NOT_IMPLEMENTED";
+  | "NOT_IMPLEMENTED"
+  | "MEDIA_EXPIRED";
 
 interface ErrorDefaults {
   httpStatus: number;
@@ -47,6 +48,10 @@ const DEFAULTS: Record<ErrorCode, ErrorDefaults> = {
   UNAUTHORIZED: { httpStatus: 401, retryable: false, fallbackToOtp: false },
   INTERNAL: { httpStatus: 500, retryable: false, fallbackToOtp: true },
   NOT_IMPLEMENTED: { httpStatus: 501, retryable: false, fallbackToOtp: false },
+  // A relay media link (or the upstream presign behind it) expired. The
+  // caller must request a fresh decision for fresh URLs; retrying the same
+  // link or falling back to OTP cannot help.
+  MEDIA_EXPIRED: { httpStatus: 410, retryable: false, fallbackToOtp: false },
 };
 
 export interface ErrorEnvelope {

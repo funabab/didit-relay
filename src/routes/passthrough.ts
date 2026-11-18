@@ -13,12 +13,14 @@
  * forward, retry (reads only), map-or-stream. Each step short-circuits;
  * later steps never run after an early failure.
  *
- * Non-goals live elsewhere: media re-serving (Phase 2), evidence storage
- * (Phase 3), webhooks. This file only proxies bytes and headers.
+ * Non-goals live elsewhere: evidence storage (Phase 3), webhooks. Media
+ * bytes are served by `src/routes/media.ts`; this file only rewrites their
+ * URLs inside `2xx` JSON bodies (Phase 2) and otherwise proxies bytes.
  */
 import type { Config } from "../config";
 import { AppError, type ErrorCode, type ErrorFlagOverrides } from "../http/errors";
 import type { Logger } from "../logging/logger";
+import { rewriteJsonBody } from "../media/rewrite";
 import {
   IDEMPOTENCY_KEY_PATTERN,
   type IdempotencyStore,
@@ -33,6 +35,8 @@ export interface ProxyContext {
   store: IdempotencyStore;
   /** Inbound socket address when the server provided one, else null. */
   remoteAddr: string | null;
+  /** Media link signing key (explicit secret or derived from the API key). */
+  signingKey: Uint8Array;
 }
 
 export interface ProxyOutcome {
@@ -526,7 +530,8 @@ interface MapInput {
  * Map the upstream outcome or stream it back. JSON `4xx` (other than 401
  * and 429) passes through verbatim — status, body, content-type — because
  * those are validation answers about the caller's own request. Everything
- * else becomes the envelope, and streamed bodies are never buffered.
+ * else becomes the envelope. Bodies are streamed without buffering except
+ * `2xx` responses that need an idempotency record or media-URL rewriting.
  */
 async function mapUpstreamResponse(upstream: Response, input: MapInput): Promise<ProxyOutcome> {
   const { ctx, attempts, upstreamMs } = input;
@@ -580,22 +585,48 @@ async function mapUpstreamResponse(upstream: Response, input: MapInput): Promise
     };
   }
 
-  if (input.slot !== null && status >= 200 && status < 300) {
+  // Rewriting needs both media keys; with either missing this block
+  // behaves exactly as before (buffer only for the idempotency record,
+  // stream everything else) and responses stay byte-identical.
+  const rewritingActive =
+    ctx.config.diditMediaHosts.length > 0 && ctx.config.publicMediaBase !== "";
+  const wantsRewrite =
+    rewritingActive && isJsonContentType(upstream.headers.get("content-type"));
+  if (status >= 200 && status < 300 && (input.slot !== null || wantsRewrite)) {
     let bytes: Uint8Array<ArrayBuffer>;
     try {
       bytes = new Uint8Array(await upstream.arrayBuffer());
     } catch {
       return failUpstream(upstream, input, "UPSTREAM_ERROR", "upstream request failed");
     }
-    // Recording is the one path that buffers: the bytes are both the
-    // response and the replay source, so the record keeps a copy.
-    ctx.store.complete(input.slot.path, input.slot.key, input.slot.token, {
-      status,
-      contentType: upstream.headers.get("content-type"),
-      body: bytes.slice(),
-    });
+    let out = bytes;
+    if (wantsRewrite && bytes.byteLength > 0) {
+      // One expiry for the whole body, so one URL always yields one token.
+      out = rewriteJsonBody(bytes, {
+        mediaHosts: new Set(ctx.config.diditMediaHosts),
+        publicMediaBase: ctx.config.publicMediaBase,
+        signingKey: ctx.signingKey,
+        expiresAtMs: Date.now() + ctx.config.mediaLinkTtlMs,
+      });
+    }
+    if (input.slot !== null) {
+      // Recording is a buffering path: the bytes are both the response
+      // and the replay source, so the record keeps a copy — of the
+      // rewritten bytes, or a replay would hand back upstream URLs.
+      ctx.store.complete(input.slot.path, input.slot.key, input.slot.token, {
+        status,
+        contentType: upstream.headers.get("content-type"),
+        body: out.slice(),
+      });
+    }
+    const headers = filteredHeaders(upstream.headers);
+    if (out !== bytes) {
+      // Rewritten bodies are re-serialized: the upstream length (and the
+      // etag, already dropped by the allowlist) no longer matches.
+      headers.set("content-length", String(out.byteLength));
+    }
     return {
-      response: new Response(bytes, { status, headers: filteredHeaders(upstream.headers) }),
+      response: new Response(out, { status, headers }),
       upstreamStatus: status,
       upstreamMs,
       attempts,

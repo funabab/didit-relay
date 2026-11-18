@@ -24,6 +24,18 @@ export interface Config {
   upstreamWriteTimeoutMs: number;
   upstreamMaxBodyBytes: number;
   mediaCacheDir: string;
+  /** Lowercased hostnames whose URLs are rewritten to relay media links. Empty disables rewriting. */
+  diditMediaHosts: string[];
+  /** Absolute origin the bank uses for media links. Empty disables rewriting. */
+  publicMediaBase: string;
+  /** Lifetime of a relay media link, in milliseconds. */
+  mediaLinkTtlMs: number;
+  /** When false, media is streamed upstream on every request and never cached. */
+  mediaCacheEnabled: boolean;
+  /** Explicit media signing secret. Empty derives the key from `DIDIT_API_KEY`. */
+  mediaSigningSecret: string;
+  /** Upper bound on bytes held under the media cache directory. */
+  mediaCacheMaxBytes: number;
   logLevel: LogLevel;
   nodeEnv: string;
   shutdownTimeoutMs: number;
@@ -46,11 +58,21 @@ const DEFAULT_UPSTREAM_TIMEOUT_MS = 1500;
 const DEFAULT_UPSTREAM_WRITE_TIMEOUT_MS = 5000;
 const DEFAULT_UPSTREAM_MAX_BODY_BYTES = 8388608;
 const DEFAULT_MEDIA_CACHE_DIR = "./.cache/media";
+// Upstream presigned media URLs are believed to live ~1h (unobserved as
+// yet); relay links last 30 minutes to leave margin. See README "Media".
+const DEFAULT_MEDIA_LINK_TTL_MS = 1800000;
+const DEFAULT_MEDIA_CACHE_ENABLED = true;
+const DEFAULT_MEDIA_CACHE_MAX_BYTES = 268435456;
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const DEFAULT_NODE_ENV = "development";
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
 
 const VALID_LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+
+// Bare hostnames only: no scheme, port, path, userinfo or whitespace.
+// Covers DNS names, `localhost` and IPv4 literals (tests use 127.0.0.1).
+const HOSTNAME_LABEL = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+const HOSTNAME_PATTERN = new RegExp(`^${HOSTNAME_LABEL}(?:\\.${HOSTNAME_LABEL})*$`);
 
 type Env = Record<string, string | undefined>;
 
@@ -154,6 +176,97 @@ export function loadConfig(env: Env): ConfigResult {
     mediaCacheDir = rawCacheDir?.trim() as string;
   }
 
+  let diditMediaHosts: string[] = [];
+  const rawMediaHosts = env["DIDIT_MEDIA_HOSTS"];
+  if (!blank(rawMediaHosts)) {
+    const entries = (rawMediaHosts as string)
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    const seen = new Set<string>();
+    const hosts: string[] = [];
+    let valid = entries.length > 0;
+    for (const entry of entries) {
+      if (entry.length > 253 || !HOSTNAME_PATTERN.test(entry)) {
+        valid = false;
+        break;
+      }
+      const lower = entry.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        hosts.push(lower);
+      }
+    }
+    if (!valid) {
+      return fail(env, "DIDIT_MEDIA_HOSTS must be a comma-separated list of hostnames.");
+    }
+    diditMediaHosts = hosts;
+  }
+
+  let publicMediaBase = "";
+  const rawMediaBase = env["PUBLIC_MEDIA_BASE"];
+  if (!blank(rawMediaBase)) {
+    const trimmed = rawMediaBase?.trim() as string;
+    let url: URL;
+    try {
+      url = new URL(trimmed);
+    } catch {
+      return fail(env, "PUBLIC_MEDIA_BASE must be a valid absolute http(s) origin.");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return fail(env, "PUBLIC_MEDIA_BASE must be a valid absolute http(s) origin.");
+    }
+    if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+      return fail(env, "PUBLIC_MEDIA_BASE must not contain credentials, query or fragment.");
+    }
+    if (url.pathname !== "" && url.pathname !== "/") {
+      return fail(env, "PUBLIC_MEDIA_BASE must be a valid absolute http(s) origin.");
+    }
+    if (url.protocol === "http:" && nodeEnv !== "development" && nodeEnv !== "test") {
+      return fail(
+        env,
+        "PUBLIC_MEDIA_BASE must use https (http: is only allowed when NODE_ENV is development or test).",
+      );
+    }
+    publicMediaBase = trimmed.replace(/\/+$/, "");
+  }
+
+  let mediaLinkTtlMs = DEFAULT_MEDIA_LINK_TTL_MS;
+  const rawLinkTtl = env["MEDIA_LINK_TTL_MS"];
+  if (!blank(rawLinkTtl)) {
+    const parsed = Number(rawLinkTtl?.trim());
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return fail(env, "MEDIA_LINK_TTL_MS must be a positive integer in milliseconds.");
+    }
+    mediaLinkTtlMs = parsed;
+  }
+
+  let mediaCacheEnabled = DEFAULT_MEDIA_CACHE_ENABLED;
+  const rawCacheEnabled = env["MEDIA_CACHE_ENABLED"];
+  if (!blank(rawCacheEnabled)) {
+    const normalized = rawCacheEnabled?.trim().toLowerCase() as string;
+    if (normalized !== "true" && normalized !== "false") {
+      return fail(env, "MEDIA_CACHE_ENABLED must be either true or false.");
+    }
+    mediaCacheEnabled = normalized === "true";
+  }
+
+  let mediaSigningSecret = "";
+  const rawSigningSecret = env["MEDIA_SIGNING_SECRET"];
+  if (!blank(rawSigningSecret)) {
+    mediaSigningSecret = rawSigningSecret?.trim() as string;
+  }
+
+  let mediaCacheMaxBytes = DEFAULT_MEDIA_CACHE_MAX_BYTES;
+  const rawCacheMax = env["MEDIA_CACHE_MAX_BYTES"];
+  if (!blank(rawCacheMax)) {
+    const parsed = Number(rawCacheMax?.trim());
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return fail(env, "MEDIA_CACHE_MAX_BYTES must be a positive integer in bytes.");
+    }
+    mediaCacheMaxBytes = parsed;
+  }
+
   let logLevel = DEFAULT_LOG_LEVEL;
   const rawLevel = env["LOG_LEVEL"];
   if (!blank(rawLevel)) {
@@ -187,6 +300,12 @@ export function loadConfig(env: Env): ConfigResult {
       upstreamWriteTimeoutMs,
       upstreamMaxBodyBytes,
       mediaCacheDir,
+      diditMediaHosts,
+      publicMediaBase,
+      mediaLinkTtlMs,
+      mediaCacheEnabled,
+      mediaSigningSecret,
+      mediaCacheMaxBytes,
       logLevel,
       nodeEnv,
       shutdownTimeoutMs,

@@ -16,6 +16,8 @@
 export type ErrorCode =
   | "UPSTREAM_TIMEOUT"
   | "UPSTREAM_ERROR"
+  | "UPSTREAM_RATE_LIMITED"
+  | "PAYLOAD_TOO_LARGE"
   | "BAD_REQUEST"
   | "NOT_FOUND"
   | "UNAUTHORIZED"
@@ -32,12 +34,14 @@ interface ErrorDefaults {
  * Canonical mapping. The same table is documented in README.md;
  * tests/errors.test.ts asserts the two stay in sync.
  *
- * NOT_IMPLEMENTED is stub-only: it backs the phase 0 /v3/* stub and the
- * readyz "not ready" path never uses it.
+ * NOT_IMPLEMENTED is retained from phase 0: it backed the /v3/* stub and
+ * nothing returns it now that the proxy is implemented.
  */
 const DEFAULTS: Record<ErrorCode, ErrorDefaults> = {
   UPSTREAM_TIMEOUT: { httpStatus: 504, retryable: true, fallbackToOtp: true },
   UPSTREAM_ERROR: { httpStatus: 502, retryable: true, fallbackToOtp: true },
+  UPSTREAM_RATE_LIMITED: { httpStatus: 429, retryable: true, fallbackToOtp: true },
+  PAYLOAD_TOO_LARGE: { httpStatus: 413, retryable: false, fallbackToOtp: false },
   BAD_REQUEST: { httpStatus: 400, retryable: false, fallbackToOtp: false },
   NOT_FOUND: { httpStatus: 404, retryable: false, fallbackToOtp: false },
   UNAUTHORIZED: { httpStatus: 401, retryable: false, fallbackToOtp: false },
@@ -54,20 +58,32 @@ export interface ErrorEnvelope {
   };
 }
 
+export interface ErrorFlagOverrides {
+  retryable?: boolean;
+  fallbackToOtp?: boolean;
+}
+
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly httpStatus: number;
   readonly retryable: boolean;
   readonly fallbackToOtp: boolean;
 
-  constructor(code: ErrorCode, message: string) {
+  /**
+   * `overrides` adjusts the advisory flags only; the code-to-status
+   * mapping in DEFAULTS never changes. It exists for the one case where
+   * the same code carries different caller semantics: a 401 from
+   * upstream means the relay's own key is wrong, so unlike a caller
+   * authentication failure it still allows completing via OTP.
+   */
+  constructor(code: ErrorCode, message: string, overrides?: ErrorFlagOverrides) {
     super(message);
     this.name = "AppError";
     this.code = code;
     const defaults = DEFAULTS[code];
     this.httpStatus = defaults.httpStatus;
-    this.retryable = defaults.retryable;
-    this.fallbackToOtp = defaults.fallbackToOtp;
+    this.retryable = overrides?.retryable ?? defaults.retryable;
+    this.fallbackToOtp = overrides?.fallbackToOtp ?? defaults.fallbackToOtp;
   }
 
   toEnvelope(): ErrorEnvelope {

@@ -14,6 +14,8 @@ const CASES: {
 }[] = [
   { code: "UPSTREAM_TIMEOUT", httpStatus: 504, retryable: true, fallbackToOtp: true },
   { code: "UPSTREAM_ERROR", httpStatus: 502, retryable: true, fallbackToOtp: true },
+  { code: "UPSTREAM_RATE_LIMITED", httpStatus: 429, retryable: true, fallbackToOtp: true },
+  { code: "PAYLOAD_TOO_LARGE", httpStatus: 413, retryable: false, fallbackToOtp: false },
   { code: "BAD_REQUEST", httpStatus: 400, retryable: false, fallbackToOtp: false },
   { code: "NOT_FOUND", httpStatus: 404, retryable: false, fallbackToOtp: false },
   { code: "UNAUTHORIZED", httpStatus: 401, retryable: false, fallbackToOtp: false },
@@ -44,10 +46,10 @@ describe("AppError taxonomy", () => {
   test("every error except client errors still allows completing via OTP", () => {
     // fallbackToOtp is about the caller, not the request: even our own bug
     // (INTERNAL, not retryable) must not block the authorization.
-    for (const code of ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR", "INTERNAL"] as const) {
+    for (const code of ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR", "UPSTREAM_RATE_LIMITED", "INTERNAL"] as const) {
       expect(new AppError(code, "x").fallbackToOtp).toBe(true);
     }
-    for (const code of ["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED"] as const) {
+    for (const code of ["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "PAYLOAD_TOO_LARGE"] as const) {
       expect(new AppError(code, "x").fallbackToOtp).toBe(false);
     }
   });

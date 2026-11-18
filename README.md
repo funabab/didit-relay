@@ -11,9 +11,10 @@ Three jobs, built in phases:
 2. Re-serve short-lived presigned biometric media from `assets.<domain>`.
 3. Store per-authorization evidence packs append-only, inside the bank's perimeter.
 
-Status: Phase 0 scaffold (config, server, error taxonomy, redaction-safe logging, health
-endpoints, tests, container packaging). The Didit proxy is not implemented yet: every
-path under `/v3/*` answers `501`.
+Status: Phase 1 proxy. `GET`, `POST`, `PATCH` and `DELETE` under `/v3/*` are proxied
+to `DIDIT_API_BASE` with key injection, one timeout budget, read-only retry and
+per-path `POST` idempotency. Media re-serving (Phase 2), evidence storage (Phase 3)
+and webhooks are not implemented.
 
 ## Prerequisites
 
@@ -59,6 +60,7 @@ docker compose up --build
 | `PORT` | `8080` | Integer 1-65535. |
 | `DIDIT_API_BASE` | `https://verification.didit.me` | Must be an https URL, unless `NODE_ENV` is `development` or `test` (then `http:` is allowed with a boot-time warning). Must not contain credentials or a query string. |
 | `UPSTREAM_TIMEOUT_MS` | `1200` | Positive integer, milliseconds. |
+| `UPSTREAM_MAX_BODY_BYTES` | `8388608` | Positive integer, bytes. Inbound bodies past the cap answer `413` and the upstream is never called. |
 | `MEDIA_CACHE_DIR` | `./.cache/media` | Any non-empty path. |
 | `LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `NODE_ENV` | `development` | Any non-empty string. |
@@ -70,7 +72,7 @@ docker compose up --build
 | - | - | - |
 | `GET` | `/healthz` | Liveness. Always `200 {"status":"ok"}`; never depends on config. |
 | `GET` | `/readyz` | Readiness. `200 {"status":"ready"}` when boot config was valid, otherwise `503 {"status":"not_ready","reason":"..."}`. |
-| any | `/v3/*` | Phase 0 stub: `501` with the error envelope. |
+| any | `/v3`, `/v3/*` | Proxied to `{DIDIT_API_BASE}/v3...`: method, path, query and body forwarded; API key injected; JSON `4xx` passed through verbatim; everything else mapped into the error envelope. See "Proxy" below. |
 | any | anything else | `404` with the error envelope. |
 
 Every response carries an `x-request-id` header. When the inbound request supplies
@@ -97,19 +99,88 @@ the reason a customer cannot authorize a debit.
 | - | - | - | - |
 | `UPSTREAM_TIMEOUT` | 504 | true | true |
 | `UPSTREAM_ERROR` | 502 | true | true |
+| `UPSTREAM_RATE_LIMITED` | 429 | true | true |
+| `PAYLOAD_TOO_LARGE` | 413 | false | false |
 | `BAD_REQUEST` | 400 | false | false |
 | `NOT_FOUND` | 404 | false | false |
 | `UNAUTHORIZED` | 401 | false | false |
 | `INTERNAL` | 500 | false | true |
 | `NOT_IMPLEMENTED` | 501 | false | false |
 
-`NOT_IMPLEMENTED` is stub-only: it backs the phase 0 `/v3/*` stub.
+`NOT_IMPLEMENTED` is retained from phase 0; nothing returns it now that the
+proxy replaced the `/v3/*` stub.
+
+`UNAUTHORIZED` needs one footnote: the row above is the taxonomy default for
+a caller authentication failure. A `401` from upstream instead means the
+relay's own key is wrong, so the proxy answers the same code and status but
+with `fallbackToOtp: true` — our misconfiguration must never be the reason
+a customer cannot authorize a debit.
+
+## Proxy
+
+Every Didit call the bank makes passes through `/v3/*`, because the bank
+allowlists exactly one host. The proxy:
+
+- resolves the inbound path against `DIDIT_API_BASE` and refuses anything
+  that does not stay `/v3` or under `/v3/` (`404`), including encoded
+  traversal, `//host/` tricks and backslashes; the resolved origin is
+  re-verified before every call, so no request can leave for another host;
+- forwards method, path, query string (byte-for-byte) and body, with the
+  trailing slash preserved (`/v3/session/` and `/v3/session` stay different);
+- injects `x-api-key`, sends the relay request id as `x-request-id` so
+  Didit support can correlate a complaint with our logs, forces
+  `accept-encoding: identity`, and appends its own user-agent; caller keys,
+  cookies, `authorization`, `content-length` and every `x-forwarded-*` are
+  dropped (`x-forwarded-for` is set only to the observed socket address,
+  when the server provides one);
+- enforces one deadline (`UPSTREAM_TIMEOUT_MS`) for the whole exchange,
+  covering time-to-response-headers; expiry answers `504 UPSTREAM_TIMEOUT`;
+- retries `GET`/`HEAD` at most once, only on transport errors and upstream
+  `502`/`503`/`504`, only with at least half the budget left — and never
+  retries `POST`, `PATCH`, `DELETE` or `429`;
+- passes JSON upstream `4xx` (other than `401`/`429`) through verbatim, so
+  the caller sees Didit's own field errors; maps transport failures,
+  timeouts, `5xx`, `401` and `429` into the envelope; and maps a non-JSON
+  `4xx` (Django answers unknown `/v3/` paths with an HTML page) to
+  `UPSTREAM_ERROR` rather than handing a JSON client a page of HTML;
+- streams response bodies back without buffering, forwarding only
+  `content-type`, `content-length`, `retry-after` and `location`.
+
+`PATCH /v3/session/{id}/update-status/` is proxied like any other path: its
+body shape is the caller's business, not the relay's, and it gets no
+special semantics here.
+
+### Idempotency
+
+`POST /v3/*` requests carrying an `Idempotency-Key` header
+(`[A-Za-z0-9._:-]{1,128}`) execute once per path: a repeat within 10
+minutes replays the recorded status, body and `content-type` with an
+`idempotent-replayed: true` header and no upstream call, and a repeat that
+arrives while the first is in flight waits for it. Only `2xx` responses
+are recorded; failures are never cached. Keys are scoped per path, so the
+same key on two paths cannot collide.
+
+The store is in-process (10,000 entries, oldest evicted first, lazy TTL
+sweep) with no new dependency. It is single-instance by design: this is
+not a distributed lock, two relay instances do not coordinate, and a
+restart drops every record. Without the header, behaviour is unchanged.
+
+### Known limitations
+
+- Idempotency is in-process and single-instance (see above).
+- The timeout covers time-to-response-headers; a stalled response body is
+  not bounded here.
+- Presigned media URLs inside JSON bodies are returned untouched; Phase 2
+  handles them.
 
 ## Logging
 
 JSON lines to stdout: `level`, `time`, `msg`, `requestId`, plus caller fields. Access logs
-carry method, path (no query string), status, duration and requestId only. Request and
-response bodies are never logged.
+carry method, path (no query string), status, duration and requestId only. Proxied calls
+add `upstreamStatus` (last upstream status, null when upstream never answered),
+`upstreamMs` (wall time on the upstream exchange), `attempts` (upstream fetch
+attempts, 0 when upstream was never called) and, on idempotent replays,
+`replayed: true`. Request and response bodies are never logged.
 
 Redaction replaces the value of any key matching this case-insensitive pattern with
 `[REDACTED]`:
@@ -141,8 +212,9 @@ src/lifecycle.ts           drain helper for graceful shutdown (testable, no serv
 src/http/errors.ts         AppError hierarchy
 src/logging/logger.ts      structured JSON logger with recursive redaction
 src/routes/health.ts       GET /healthz, GET /readyz
-src/routes/passthrough.ts  stub only: responds 501
-tests/*.test.ts            bun test suite (health, config, errors, logger, lifecycle)
+src/routes/passthrough.ts  Didit proxy: path safety, body cap, forward, retry, mapping
+src/proxy/idempotency.ts   in-process idempotency store for POST /v3/* (single-instance)
+tests/*.test.ts            bun test suite (health, config, errors, logger, lifecycle, proxy)
 Dockerfile                 bun-slim runtime image, non-root, healthchecked
 docker-compose.yml         local container run with a media-cache volume
 .env.example               documented defaults (copy to .env, never commit .env)

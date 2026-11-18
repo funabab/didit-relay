@@ -17,6 +17,7 @@ describe("config", () => {
       diditApiKey: "test-placeholder-key",
       diditApiBase: "https://verification.didit.me",
       upstreamTimeoutMs: 1200,
+      upstreamMaxBodyBytes: 8388608,
       mediaCacheDir: "./.cache/media",
       logLevel: "info",
       nodeEnv: "development",
@@ -30,6 +31,7 @@ describe("config", () => {
       PORT: "9000",
       DIDIT_API_BASE: "http://localhost:9999",
       UPSTREAM_TIMEOUT_MS: "5000",
+      UPSTREAM_MAX_BODY_BYTES: "1024",
       MEDIA_CACHE_DIR: "/tmp/media",
       LOG_LEVEL: "debug",
       NODE_ENV: "development",
@@ -42,6 +44,7 @@ describe("config", () => {
     expect(result.config.port).toBe(9000);
     expect(result.config.logLevel).toBe("debug");
     expect(result.config.upstreamTimeoutMs).toBe(5000);
+    expect(result.config.upstreamMaxBodyBytes).toBe(1024);
     expect(result.config.shutdownTimeoutMs).toBe(3000);
   });
 
@@ -131,6 +134,26 @@ describe("config", () => {
         expect(result.error).toContain("DIDIT_API_BASE must not contain credentials or query");
       }
     }
+  });
+
+  test("malformed UPSTREAM_MAX_BODY_BYTES fails without leaking values", () => {
+    for (const value of ["0", "-1", "abc", "1.5"]) {
+      const result = loadConfig({ ...KEY, UPSTREAM_MAX_BODY_BYTES: value });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("UPSTREAM_MAX_BODY_BYTES");
+        expect(result.error).not.toContain("test-placeholder-key");
+      }
+    }
+  });
+
+  test("blank UPSTREAM_MAX_BODY_BYTES falls back to the default", () => {
+    const result = loadConfig({ ...KEY, UPSTREAM_MAX_BODY_BYTES: "  " });
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.config.upstreamMaxBodyBytes).toBe(8388608);
   });
 
   test("malformed SHUTDOWN_TIMEOUT_MS fails without leaking values", () => {

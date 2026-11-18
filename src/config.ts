@@ -19,6 +19,7 @@ export interface Config {
   diditApiKey: string;
   diditApiBase: string;
   upstreamTimeoutMs: number;
+  upstreamMaxBodyBytes: number;
   mediaCacheDir: string;
   logLevel: LogLevel;
   nodeEnv: string;
@@ -32,6 +33,7 @@ export type ConfigResult =
 const DEFAULT_PORT = 8080;
 const DEFAULT_DIDIT_API_BASE = "https://verification.didit.me";
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 1200;
+const DEFAULT_UPSTREAM_MAX_BODY_BYTES = 8388608;
 const DEFAULT_MEDIA_CACHE_DIR = "./.cache/media";
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
 const DEFAULT_NODE_ENV = "development";
@@ -115,6 +117,16 @@ export function loadConfig(env: Env): ConfigResult {
     upstreamTimeoutMs = parsed;
   }
 
+  let upstreamMaxBodyBytes = DEFAULT_UPSTREAM_MAX_BODY_BYTES;
+  const rawMaxBody = env["UPSTREAM_MAX_BODY_BYTES"];
+  if (!blank(rawMaxBody)) {
+    const parsed = Number(rawMaxBody?.trim());
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return fail(env, "UPSTREAM_MAX_BODY_BYTES must be a positive integer in bytes.");
+    }
+    upstreamMaxBodyBytes = parsed;
+  }
+
   let mediaCacheDir = DEFAULT_MEDIA_CACHE_DIR;
   const rawCacheDir = env["MEDIA_CACHE_DIR"];
   if (!blank(rawCacheDir)) {
@@ -151,6 +163,7 @@ export function loadConfig(env: Env): ConfigResult {
       diditApiKey: (rawKey as string).trim(),
       diditApiBase,
       upstreamTimeoutMs,
+      upstreamMaxBodyBytes,
       mediaCacheDir,
       logLevel,
       nodeEnv,

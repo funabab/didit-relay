@@ -12,11 +12,21 @@ import { loadConfig, type Config } from "./config";
 import { AppError, toErrorResponse } from "./http/errors";
 import { drain } from "./lifecycle";
 import { createLogger, registerSecret, type Logger } from "./logging/logger";
+import { IdempotencyStore } from "./proxy/idempotency";
 import { handleHealthz, handleReadyz } from "./routes/health";
-import { handlePassthrough } from "./routes/passthrough";
+import { handleProxy } from "./routes/passthrough";
+
+/**
+ * The sliver of the server handle the proxy needs: the inbound socket
+ * address for `x-forwarded-for`. Structural on purpose, so tests can pass
+ * a stub and production passes the `Bun.serve` server unchanged.
+ */
+export interface RequestIPProvider {
+  requestIP(req: Request): { address: string } | null;
+}
 
 export interface App {
-  readonly fetch: (req: Request) => Promise<Response>;
+  readonly fetch: (req: Request, server?: RequestIPProvider) => Promise<Response>;
   readonly logger: Logger;
   readonly isReady: boolean;
   readonly config: Config | null;
@@ -43,6 +53,31 @@ function pathnameOf(req: Request): string {
 // accepted; anything else is replaced with a generated UUID.
 const INBOUND_REQUEST_ID = /^[A-Za-z0-9._:-]{1,64}$/;
 
+/**
+ * Best-effort inbound socket address for `x-forwarded-for`. Null in
+ * tests and on unix sockets, where there is no address to report; the
+ * proxy omits the header then instead of forwarding caller-supplied text.
+ */
+function remoteAddressOf(req: Request, server: RequestIPProvider | undefined): string | null {
+  if (server === undefined) {
+    return null;
+  }
+  try {
+    const address = server.requestIP(req)?.address;
+    if (
+      typeof address === "string" &&
+      address.length > 0 &&
+      address.length <= 64 &&
+      /^[^\s,;]+$/.test(address)
+    ) {
+      return address;
+    }
+  } catch {
+    // Observability must never fail a request.
+  }
+  return null;
+}
+
 export function createApp(
   env: Record<string, string | undefined>,
   options?: CreateAppOptions,
@@ -58,6 +93,10 @@ export function createApp(
     registerSecret(result.config.diditApiKey);
   }
 
+  // One idempotency store per app: records never cross instances, and
+  // tests get a fresh store per app instead of shared global state.
+  const idempotency = new IdempotencyStore();
+
   let inFlight = 0;
   let notifyIdle: (() => void) | null = null;
   const waitForIdle = (): Promise<void> => {
@@ -69,7 +108,7 @@ export function createApp(
     });
   };
 
-  const fetch = async (req: Request): Promise<Response> => {
+  const fetch = async (req: Request, server?: RequestIPProvider): Promise<Response> => {
     inFlight += 1;
     const inbound = req.headers.get("x-request-id");
     let requestId: string;
@@ -89,6 +128,7 @@ export function createApp(
     const method = req.method;
     const path = pathnameOf(req);
     let status = 500;
+    let proxyFields: Record<string, number | boolean | null> | null = null;
 
     try {
       let res: Response;
@@ -97,7 +137,25 @@ export function createApp(
       } else if (method === "GET" && path === "/readyz") {
         res = handleReadyz(isReady, configError);
       } else if (path === "/v3" || path.startsWith("/v3/")) {
-        res = handlePassthrough();
+        if (config === null) {
+          throw new AppError("INTERNAL", "relay is not configured");
+        }
+        const outcome = await handleProxy(req, {
+          config,
+          logger,
+          requestId,
+          store: idempotency,
+          remoteAddr: remoteAddressOf(req, server),
+        });
+        proxyFields = {
+          upstreamStatus: outcome.upstreamStatus,
+          upstreamMs: outcome.upstreamMs,
+          attempts: outcome.attempts,
+        };
+        if (outcome.replayed) {
+          proxyFields["replayed"] = true;
+        }
+        res = outcome.response;
       } else {
         throw new AppError("NOT_FOUND", `no route for ${method} ${path}`);
       }
@@ -114,7 +172,15 @@ export function createApp(
       return res;
     } finally {
       const durationMs = Date.now() - startedAt;
-      logger.info("request", { requestId, requestIdSource, method, path, status, durationMs });
+      logger.info("request", {
+        requestId,
+        requestIdSource,
+        method,
+        path,
+        status,
+        durationMs,
+        ...(proxyFields ?? {}),
+      });
       inFlight -= 1;
       if (inFlight === 0 && notifyIdle !== null) {
         const notify = notifyIdle;
@@ -141,7 +207,7 @@ if (import.meta.main) {
   const server = Bun.serve({
     hostname: "0.0.0.0",
     port: config.port,
-    fetch: app.fetch,
+    fetch: (req, serverHandle) => app.fetch(req, serverHandle),
   });
   logger.info("server started", { port: config.port, nodeEnv: config.nodeEnv });
   if (new URL(config.diditApiBase).protocol === "http:") {

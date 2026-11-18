@@ -52,26 +52,32 @@ describe("health endpoints", () => {
   });
 });
 
-describe("passthrough stub", () => {
-  test("/v3/session/ returns 501 with the error envelope", async () => {
+describe("proxy early rejects (no upstream call, no network)", () => {
+  test("an unsafe /v3 path returns 404 with the error envelope", async () => {
     const app = createApp({ ...VALID_ENV }, QUIET);
-    const res = await app.fetch(get("/v3/session/"));
-    expect(res.status).toBe(501);
+    const res = await app.fetch(get("/v3/%2e%2e%2f%2e%2e%2fetc/passwd"));
+    expect(res.status).toBe(404);
     const body = (await res.json()) as {
       error: { code: string; message: string; retryable: boolean; fallbackToOtp: boolean };
     };
-    expect(body.error.code).toBe("NOT_IMPLEMENTED");
+    expect(body.error.code).toBe("NOT_FOUND");
     expect(typeof body.error.message).toBe("string");
     expect(typeof body.error.retryable).toBe("boolean");
     expect(typeof body.error.fallbackToOtp).toBe("boolean");
   });
 
-  test("other /v3 paths also return the 501 stub", async () => {
-    const app = createApp({ ...VALID_ENV }, QUIET);
+  test("a /v3 body over the cap returns 413 without calling upstream", async () => {
+    const app = createApp({ ...VALID_ENV, UPSTREAM_MAX_BODY_BYTES: "16" }, QUIET);
     const res = await app.fetch(
-      new Request("http://localhost/v3/session/abc/decision/", { method: "POST" }),
+      new Request("http://localhost/v3/session/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ portrait_image: "x".repeat(64) }),
+      }),
     );
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(413);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("PAYLOAD_TOO_LARGE");
   });
 });
 

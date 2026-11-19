@@ -282,10 +282,20 @@ cache entry. The cache is a liability to size: it is bounded by
 being written never evicted), and `MEDIA_CACHE_ENABLED=false` disables
 it entirely, streaming every request upstream and writing nothing.
 
-Preset TTLs are estimates until a real presigned URL is observed: the
-upstream presign lifetime is believed to be roughly an hour, and
-`MEDIA_LINK_TTL_MS` defaults to 30 minutes to leave margin. Revisit both
-numbers once a completed session shows a real expiry.
+Observed in a completed biometric session (2026-11-19): the media fields are
+`liveness_checks[].reference_image`, `liveness_checks[].video_url` and
+`face_matches[].target_image`, all on a per-environment S3 bucket in `eu-west-1`
+(`service-didit-verification-production-<hash>.s3.amazonaws.com` — the bucket says
+"production" even for sandbox sessions, so the host must be configured per environment).
+Rewriting matches by host, so a field renamed or added later keeps working without a code
+change; only the host allowlist needs to be right.
+
+A completed session on 2026-11-19 showed presigned URLs carrying
+`X-Amz-Expires=14400`: four hours, not the hour this README previously assumed.
+`MEDIA_LINK_TTL_MS` stays at 30 minutes anyway. A relay link is a capability to fetch a
+face, so the shorter window is the point: long enough for a UI to render the evidence,
+short enough that a leaked link dies before the day is out. The four-hour upstream window
+is a constraint to stay under, not a target to match.
 
 Media links are per-instance when the signing key is derived: two relay
 instances with different API keys mint links the other rejects. Set one
@@ -309,6 +319,11 @@ Measured 2026-11-18 against `https://verification.didit.me`:
   byte-identical and would create a second session.
 - SIGTERM drain with a request in flight: signal at t0, request finished
   at 3030 ms, `waitedMs 2010`, `outcome: "drained"`, exit 0.
+- A completed biometric session, read through the relay: `status: Approved`,
+  liveness `PASSIVE` score `99.0`, face match `95.0`, three media URLs
+  rewritten to `/m/{token}` with no S3 host left in the body, and the
+  reference image served back as a 216,485-byte JPEG that decodes, then
+  served again from cache.
 
 ## Logging
 

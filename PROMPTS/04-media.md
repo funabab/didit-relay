@@ -2,8 +2,9 @@
 
 Didit returns biometric media (face crops, liveness frames, document images) as presigned
 URLs on a host that is separate from the API and undocumented, valid for roughly an hour.
-The bank allowlists two domains it already trusts (`api.` and `assets.`), so it cannot
-fetch those URLs. Phase 2 makes `assets.<domain>` serve the bytes.
+The bank whitelists origins of partners it already has a relationship with; a third-party
+S3 bucket is not on that list, so it cannot fetch those URLs. Phase 2 makes
+`assets.<domain>` serve the bytes.
 
 Non-goals: evidence storage (Phase 3), webhooks, transcoding, thumbnails. Do not add them.
 
@@ -117,8 +118,8 @@ replay would hand back unrewritten upstream URLs. Record the rewritten bytes.
 - `bun test` green (expect roughly 100+), `bunx tsc --noEmit` clean.
 - `docker build` succeeds; container starts with the new env unset (rewriting inert) and
   with them set (rewriting active) without changing any Phase 1 behaviour.
-- README: new config rows, a short "Media" section stating the two-domain allowlist
-  reason, the token model, the cache liability, and that preset TTLs are estimates until
+- README: new config rows, a short "Media" section stating the whitelisting reason, the
+  token model, the cache liability, and that preset TTLs are estimates until
   a real presigned URL is observed.
 
 ## Hard rules

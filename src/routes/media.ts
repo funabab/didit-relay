@@ -1,12 +1,12 @@
 /**
  * `GET /m/{token}`: re-serve presigned biometric media from the relay.
  *
- * The bank allowlists two domains it already trusts (`api.` and `assets.`)
- * and cannot fetch Didit's presigned media hosts, so rewritten API
- * responses point here and this handler serves the bytes: it verifies the
- * token (signature before parsing, constant-time), serves from the disk
- * cache on a hit, and otherwise fetches the upstream URL once and caches
- * only a successful `2xx`.
+ * The bank whitelists origins it already has a relationship with, not a
+ * third-party S3 bucket it has never heard of, so rewritten API responses
+ * point here and this handler serves the bytes: it verifies the token
+ * (signature before parsing, constant-time), serves from the disk cache on
+ * a hit, and otherwise fetches the upstream URL once and caches only a
+ * successful `2xx`.
  *
  * Authority and secrecy rules:
  * - every request must pass signature and expiry; anything else is 404,

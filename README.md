@@ -9,8 +9,11 @@ liveness plus a face match against the portrait the bank already holds, using Di
 `biometric_authentication` workflow. Didit answers one question — is this the person
 behind the mandate — and the mandate decision stays where it was.
 
-It exists for one reason: a bank will allowlist one inbound IP and two domains it already
-trusts, and nothing else. The relay makes that possible.
+It exists for one reason: banks whitelist the IPs of environments they already have a
+relationship with. A third-party SaaS dependency is a different conversation — a new
+vendor's egress addresses go through security review, and the answer is often no. The
+relay means the bank talks to infrastructure it already trusts, and the credential stays
+on our side of the boundary.
 
 Three jobs, built in phases:
 
@@ -26,11 +29,12 @@ storage (Phase 3) and webhooks are not implemented.
 
 ## Design decisions worth defending
 
-**Why a relay instead of letting the bank call Didit.** The bank's perimeter allows one
-inbound IP and two domains it already trusts. The alternative was asking it to allowlist
-`verification.didit.me` and an undocumented media host, which is a change request through
-security review, and it hands the API key to a system outside our control. The relay is
-smaller than that conversation.
+**Why a relay instead of letting the bank call Didit.** Banks whitelist the IPs of
+environments they already trust; a partner with a signed relationship gets its addresses
+allowed, a SaaS dependency does not automatically. Asking for `verification.didit.me` plus
+an undocumented media host is a new third-party allowlist entry, and the answer to that is
+usually a security review, not a yes. The relay puts the call back on infrastructure the
+bank already has a relationship with, and keeps the API key out of the bank entirely.
 
 **Why the key lives here and nowhere else.** The bank's authorization module never holds a
 Didit credential. A compromise inside the bank can spend nothing at Didit and cannot reach
@@ -181,8 +185,9 @@ a customer cannot authorize a debit.
 
 ## Proxy
 
-Every Didit call the bank makes passes through `/v3/*`, because the bank
-allowlists exactly one host. The proxy:
+Every Didit call the bank makes passes through `/v3/*`, so the bank's
+authorization module only ever calls a host it already whitelists and never
+needs a rule for a third-party vendor's addresses. The proxy:
 
 - resolves the inbound path against `DIDIT_API_BASE` and refuses anything
   that does not stay `/v3` or under `/v3/` (`404`), including encoded
@@ -245,16 +250,16 @@ back relay links, not upstream URLs.
 ## Media
 
 Didit returns biometric media (face crops, liveness frames, document
-images) as presigned URLs on a host separate from the API. The bank
-allowlists two domains it already trusts (`api.` and `assets.`) and
-cannot fetch those URLs, so the relay re-serves the bytes: `2xx` JSON
+images) as presigned URLs on a host separate from the API. That host is a
+third-party S3 bucket the bank has no relationship with, so the relay
+re-serves the bytes from an origin the bank already trusts: `2xx` JSON
 responses have their media URLs rewritten to
 `${PUBLIC_MEDIA_BASE}/m/{token}`, and `GET /m/{token}` serves the bytes.
 
-Rewriting is shape-agnostic on purpose: no completed session has been
-observed yet, so the field names carrying media URLs are unknown.
-Rewriting matches by host instead — any string value that parses as an
-absolute `http(s)` URL whose host is in `DIDIT_MEDIA_HOSTS` is replaced,
+Rewriting is shape-agnostic on purpose. It was written before a completed
+session had ever been observed, so the field names carrying media URLs were
+unknown. Rewriting matches by host instead — any string value that parses as
+an absolute `http(s)` URL whose host is in `DIDIT_MEDIA_HOSTS` is replaced,
 whatever field holds it. API hosts are never in that list, so an API URL
 cannot be rewritten. Only `2xx` `application/json` responses are
 rewritten; a body that fails to parse is forwarded untouched.

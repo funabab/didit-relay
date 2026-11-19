@@ -5,8 +5,10 @@ under "Scope". Do not implement the Didit proxy yet.
 
 ## What this service is
 
-A bank runs its own mandate authorization module inside its VPC. The bank will allowlist one
-inbound IP and two outbound domains belonging to us. It will not allowlist any Didit hostname.
+A bank runs its own mandate authorization module inside its VPC. It whitelists the IPs of
+partner environments it already has a relationship with; a third-party vendor's addresses
+go through security review and are often refused. So the bank will not whitelist any Didit
+hostname.
 
 So this relay sits outside the bank and does three things:
 

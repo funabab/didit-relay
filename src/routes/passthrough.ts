@@ -1,6 +1,8 @@
 /**
  * Phase 1 Didit proxy: every call the bank's authorization module makes
- * passes through here, because the bank allowlists exactly one host.
+ * passes through here, so the bank only ever calls a host it already
+ * whitelists and never needs an allowlist rule for a third-party vendor's
+ * addresses.
  *
  * Why this shape: the relay injects the API key (the caller never holds
  * it), enforces a per-method time budget for the whole exchange (reads

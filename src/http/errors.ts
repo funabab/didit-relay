@@ -3,15 +3,12 @@
  *
  * Every error returned to a caller uses the stable envelope:
  *
- *   { "error": { "code": "...", "message": "...",
- *                "retryable": true, "fallbackToOtp": true } }
+ *   { "error": { "code": "...", "message": "...", "retryable": true } }
  *
- * `retryable` tells the caller whether retrying the same request may succeed.
- * `fallbackToOtp` tells the caller whether it can still complete the
- * authorization another way, via an OTP challenge. Those are independent:
- * an unexpected bug inside the relay (`INTERNAL`) is not retryable, but the
- * caller must still fall back to OTP — our bug must never be the reason a
- * customer cannot authorize a debit.
+ * The envelope is `code`, `message`, `retryable` and nothing else.
+ * `retryable` tells the caller whether retrying the same request may
+ * succeed. The relay reports what happened to the call and nothing about
+ * the authorization.
  */
 export type ErrorCode =
   | "UPSTREAM_TIMEOUT"
@@ -28,7 +25,6 @@ export type ErrorCode =
 interface ErrorDefaults {
   httpStatus: number;
   retryable: boolean;
-  fallbackToOtp: boolean;
 }
 
 /**
@@ -39,19 +35,19 @@ interface ErrorDefaults {
  * nothing returns it now that the proxy is implemented.
  */
 const DEFAULTS: Record<ErrorCode, ErrorDefaults> = {
-  UPSTREAM_TIMEOUT: { httpStatus: 504, retryable: true, fallbackToOtp: true },
-  UPSTREAM_ERROR: { httpStatus: 502, retryable: true, fallbackToOtp: true },
-  UPSTREAM_RATE_LIMITED: { httpStatus: 429, retryable: true, fallbackToOtp: true },
-  PAYLOAD_TOO_LARGE: { httpStatus: 413, retryable: false, fallbackToOtp: false },
-  BAD_REQUEST: { httpStatus: 400, retryable: false, fallbackToOtp: false },
-  NOT_FOUND: { httpStatus: 404, retryable: false, fallbackToOtp: false },
-  UNAUTHORIZED: { httpStatus: 401, retryable: false, fallbackToOtp: false },
-  INTERNAL: { httpStatus: 500, retryable: false, fallbackToOtp: true },
-  NOT_IMPLEMENTED: { httpStatus: 501, retryable: false, fallbackToOtp: false },
+  UPSTREAM_TIMEOUT: { httpStatus: 504, retryable: true },
+  UPSTREAM_ERROR: { httpStatus: 502, retryable: true },
+  UPSTREAM_RATE_LIMITED: { httpStatus: 429, retryable: true },
+  PAYLOAD_TOO_LARGE: { httpStatus: 413, retryable: false },
+  BAD_REQUEST: { httpStatus: 400, retryable: false },
+  NOT_FOUND: { httpStatus: 404, retryable: false },
+  UNAUTHORIZED: { httpStatus: 401, retryable: false },
+  INTERNAL: { httpStatus: 500, retryable: false },
+  NOT_IMPLEMENTED: { httpStatus: 501, retryable: false },
   // A relay media link (or the upstream presign behind it) expired. The
   // caller must request a fresh decision for fresh URLs; retrying the same
-  // link or falling back to OTP cannot help.
-  MEDIA_EXPIRED: { httpStatus: 410, retryable: false, fallbackToOtp: false },
+  // link cannot help.
+  MEDIA_EXPIRED: { httpStatus: 410, retryable: false },
 };
 
 export interface ErrorEnvelope {
@@ -59,36 +55,21 @@ export interface ErrorEnvelope {
     code: ErrorCode;
     message: string;
     retryable: boolean;
-    fallbackToOtp: boolean;
   };
-}
-
-export interface ErrorFlagOverrides {
-  retryable?: boolean;
-  fallbackToOtp?: boolean;
 }
 
 export class AppError extends Error {
   readonly code: ErrorCode;
   readonly httpStatus: number;
   readonly retryable: boolean;
-  readonly fallbackToOtp: boolean;
 
-  /**
-   * `overrides` adjusts the advisory flags only; the code-to-status
-   * mapping in DEFAULTS never changes. It exists for the one case where
-   * the same code carries different caller semantics: a 401 from
-   * upstream means the relay's own key is wrong, so unlike a caller
-   * authentication failure it still allows completing via OTP.
-   */
-  constructor(code: ErrorCode, message: string, overrides?: ErrorFlagOverrides) {
+  constructor(code: ErrorCode, message: string) {
     super(message);
     this.name = "AppError";
     this.code = code;
     const defaults = DEFAULTS[code];
     this.httpStatus = defaults.httpStatus;
-    this.retryable = overrides?.retryable ?? defaults.retryable;
-    this.fallbackToOtp = overrides?.fallbackToOtp ?? defaults.fallbackToOtp;
+    this.retryable = defaults.retryable;
   }
 
   toEnvelope(): ErrorEnvelope {
@@ -97,7 +78,6 @@ export class AppError extends Error {
         code: this.code,
         message: this.message,
         retryable: this.retryable,
-        fallbackToOtp: this.fallbackToOtp,
       },
     };
   }

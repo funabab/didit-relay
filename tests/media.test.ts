@@ -130,7 +130,7 @@ function logRecords(lines: string[]): Record<string, unknown>[] {
 }
 
 interface ErrorBody {
-  error: { code: string; message: string; retryable: boolean; fallbackToOtp: boolean };
+  error: { code: string; message: string; retryable: boolean };
 }
 
 async function errorBody(res: Response): Promise<ErrorBody["error"]> {
@@ -342,7 +342,6 @@ describe("serving", () => {
     const err = await errorBody(res);
     expect(err.code).toBe("MEDIA_EXPIRED");
     expect(err.retryable).toBe(false);
-    expect(err.fallbackToOtp).toBe(false);
     expect(media.calls).toHaveLength(0);
 
     // The same oracle with a live expiry verifies, proving the formats match.
@@ -481,7 +480,6 @@ describe("serving edges", () => {
     const err = await errorBody(res);
     expect(err.code).toBe("MEDIA_EXPIRED");
     expect(err.retryable).toBe(false);
-    expect(err.fallbackToOtp).toBe(false);
   });
 
   test("an upstream redirect is an upstream failure, never followed", async () => {

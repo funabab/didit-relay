@@ -93,7 +93,7 @@ function singleAccessRecord(lines: string[]): Record<string, unknown> {
 }
 
 interface ErrorBody {
-  error: { code: string; message: string; retryable: boolean; fallbackToOtp: boolean };
+  error: { code: string; message: string; retryable: boolean };
 }
 
 async function errorBody(res: Response): Promise<ErrorBody["error"]> {
@@ -381,7 +381,6 @@ describe("error mapping", () => {
     const err = (JSON.parse(rawText) as ErrorBody).error;
     expect(err.code).toBe("UPSTREAM_ERROR");
     expect(err.retryable).toBe(true);
-    expect(err.fallbackToOtp).toBe(true);
     const access = singleAccessRecord(lines);
     expect(access["attempts"]).toBe(1);
     expect(access["upstreamStatus"]).toBe(500);
@@ -406,7 +405,6 @@ describe("error mapping", () => {
     const err = await errorBody(res);
     expect(err.code).toBe("UPSTREAM_RATE_LIMITED");
     expect(err.retryable).toBe(true);
-    expect(err.fallbackToOtp).toBe(true);
     expect(JSON.stringify(err)).not.toContain("slow down");
     expect(upstream.calls).toHaveLength(1);
     expect(singleAccessRecord(lines)["attempts"]).toBe(1);
@@ -427,7 +425,7 @@ describe("error mapping", () => {
     expect(res.status).toBe(401);
     const err = await errorBody(res);
     expect(err.code).toBe("UNAUTHORIZED");
-    expect(err.fallbackToOtp).toBe(true);
+    expect(err.retryable).toBe(false);
     expect(JSON.stringify(err)).not.toContain("bad key detail");
     const failures = logRecords(lines).filter((record) => record["msg"] === "upstream request failed");
     expect(failures).toHaveLength(1);
@@ -450,6 +448,32 @@ describe("error mapping", () => {
     const failures = logRecords(lines).filter((record) => record["msg"] === "upstream request failed");
     expect(failures).toHaveLength(1);
     expect(failures[0]?.["upstreamContentType"]).toBe("text/html");
+  });
+
+  test("an error response carries no fallback key anywhere on the wire", async () => {
+    // String search on the serialized body, not a parsed shape: a later
+    // refactor must not quietly reintroduce the removed field. The needle
+    // is assembled so this guard itself keeps the `grep` gate clean.
+    const removed = ["fallback", "ToOtp"].join("");
+    const upstream = startFakeUpstream(
+      () => new Response("django blew up", { status: 500, headers: { "content-type": "text/plain" } }),
+    );
+    const { app } = testApp(upstream.baseUrl);
+    const res = await app.fetch(
+      new Request("http://localhost/v3/session/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(res.status).toBe(502);
+    const rawText = await res.text();
+    expect(rawText).not.toContain(removed);
+    expect(Object.keys((JSON.parse(rawText) as ErrorBody).error).sort()).toEqual([
+      "code",
+      "message",
+      "retryable",
+    ]);
   });
 });
 
@@ -474,7 +498,6 @@ describe("timeout budget and retry", () => {
     const err = await errorBody(res);
     expect(err.code).toBe("UPSTREAM_TIMEOUT");
     expect(err.retryable).toBe(true);
-    expect(err.fallbackToOtp).toBe(true);
     const access = singleAccessRecord(lines);
     expect(access["attempts"]).toBe(1);
     expect(access["upstreamStatus"]).toBeNull();
@@ -589,7 +612,6 @@ describe("body cap and path safety", () => {
     const err = await errorBody(res);
     expect(err.code).toBe("PAYLOAD_TOO_LARGE");
     expect(err.retryable).toBe(false);
-    expect(err.fallbackToOtp).toBe(false);
     expect(upstream.calls).toHaveLength(0);
     expect(singleAccessRecord(lines)["attempts"]).toBe(0);
   });

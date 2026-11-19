@@ -52,8 +52,8 @@ const DEFAULT_DIDIT_API_BASE = "https://verification.didit.me";
 // 1494 2229 1287 1440 ms (min 1287, median ~1470, max 2229), and a
 // GET .../decision/ read took ~300 ms. The write budget is >2x the
 // observed create max; the read budget is 5x the observed read, so a hung
-// read hands the customer to OTP in about a second instead of holding
-// the mandate screen.
+// read fails fast in about a second instead of holding the mandate
+// screen.
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 1500;
 const DEFAULT_UPSTREAM_WRITE_TIMEOUT_MS = 5000;
 const DEFAULT_UPSTREAM_MAX_BODY_BYTES = 8388608;

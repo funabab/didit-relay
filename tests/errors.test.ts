@@ -10,49 +10,40 @@ const CASES: {
   code: ErrorCode;
   httpStatus: number;
   retryable: boolean;
-  fallbackToOtp: boolean;
 }[] = [
-  { code: "UPSTREAM_TIMEOUT", httpStatus: 504, retryable: true, fallbackToOtp: true },
-  { code: "UPSTREAM_ERROR", httpStatus: 502, retryable: true, fallbackToOtp: true },
-  { code: "UPSTREAM_RATE_LIMITED", httpStatus: 429, retryable: true, fallbackToOtp: true },
-  { code: "PAYLOAD_TOO_LARGE", httpStatus: 413, retryable: false, fallbackToOtp: false },
-  { code: "BAD_REQUEST", httpStatus: 400, retryable: false, fallbackToOtp: false },
-  { code: "NOT_FOUND", httpStatus: 404, retryable: false, fallbackToOtp: false },
-  { code: "UNAUTHORIZED", httpStatus: 401, retryable: false, fallbackToOtp: false },
-  { code: "INTERNAL", httpStatus: 500, retryable: false, fallbackToOtp: true },
-  { code: "MEDIA_EXPIRED", httpStatus: 410, retryable: false, fallbackToOtp: false },
+  { code: "UPSTREAM_TIMEOUT", httpStatus: 504, retryable: true },
+  { code: "UPSTREAM_ERROR", httpStatus: 502, retryable: true },
+  { code: "UPSTREAM_RATE_LIMITED", httpStatus: 429, retryable: true },
+  { code: "PAYLOAD_TOO_LARGE", httpStatus: 413, retryable: false },
+  { code: "BAD_REQUEST", httpStatus: 400, retryable: false },
+  { code: "NOT_FOUND", httpStatus: 404, retryable: false },
+  { code: "UNAUTHORIZED", httpStatus: 401, retryable: false },
+  { code: "INTERNAL", httpStatus: 500, retryable: false },
+  { code: "MEDIA_EXPIRED", httpStatus: 410, retryable: false },
 ];
 
 describe("AppError taxonomy", () => {
   for (const expected of CASES) {
-    test(`${expected.code} maps to ${expected.httpStatus} with fallbackToOtp=${expected.fallbackToOtp}`, () => {
+    test(`${expected.code} maps to ${expected.httpStatus} with retryable=${expected.retryable}`, () => {
       const err = new AppError(expected.code, "boom");
       expect(err.code).toBe(expected.code);
       expect(err.httpStatus).toBe(expected.httpStatus);
       expect(err.retryable).toBe(expected.retryable);
-      expect(err.fallbackToOtp).toBe(expected.fallbackToOtp);
       expect(err.message).toBe("boom");
     });
   }
 
-  test("timeouts and upstream failures fall back to OTP; client errors do not", () => {
+  test("timeouts and upstream failures are retryable; client errors are not", () => {
     for (const code of ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR"] as const) {
-      expect(new AppError(code, "x").fallbackToOtp).toBe(true);
+      expect(new AppError(code, "x").retryable).toBe(true);
     }
     for (const code of ["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED"] as const) {
-      expect(new AppError(code, "x").fallbackToOtp).toBe(false);
+      expect(new AppError(code, "x").retryable).toBe(false);
     }
   });
 
-  test("every error except client errors still allows completing via OTP", () => {
-    // fallbackToOtp is about the caller, not the request: even our own bug
-    // (INTERNAL, not retryable) must not block the authorization.
-    for (const code of ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR", "UPSTREAM_RATE_LIMITED", "INTERNAL"] as const) {
-      expect(new AppError(code, "x").fallbackToOtp).toBe(true);
-    }
-    for (const code of ["BAD_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "PAYLOAD_TOO_LARGE", "MEDIA_EXPIRED"] as const) {
-      expect(new AppError(code, "x").fallbackToOtp).toBe(false);
-    }
+  test("our own bug is not retryable: the same request would hit the same bug", () => {
+    expect(new AppError("INTERNAL", "x").retryable).toBe(false);
   });
 
   test("toResponse uses the stable envelope and mapped status", async () => {
@@ -63,9 +54,18 @@ describe("AppError taxonomy", () => {
         code: "UPSTREAM_TIMEOUT",
         message: "upstream timed out",
         retryable: true,
-        fallbackToOtp: true,
       },
     });
+  });
+
+  test("toEnvelope carries exactly code, message and retryable for every code", () => {
+    // Every code in the table, including NOT_IMPLEMENTED which the mapping
+    // oracle above omits (nothing returns it now that the proxy exists).
+    const codes: ErrorCode[] = [...CASES.map((entry) => entry.code), "NOT_IMPLEMENTED"];
+    for (const code of codes) {
+      const { error } = new AppError(code, "boom").toEnvelope();
+      expect(Object.keys(error).sort()).toEqual(["code", "message", "retryable"]);
+    }
   });
 
   test("toErrorResponse passes AppError through and hides unknown failures", async () => {

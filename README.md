@@ -7,7 +7,9 @@ mandates. The bank's module decides whether a direct debit is authorized. Today 
 the customer for an OTP; the change this relay supports is to replace that OTP with
 liveness plus a face match against the portrait the bank already holds, using Didit's
 `biometric_authentication` workflow. Didit answers one question — is this the person
-behind the mandate — and the mandate decision stays where it was.
+behind the mandate — and the mandate decision stays where it was. The relay
+implements neither side of that policy: it carries the portrait in and the
+decision out.
 
 It exists for one reason: banks whitelist the IPs of environments they already have a
 relationship with. A third-party SaaS dependency is a different conversation — a new
@@ -60,6 +62,12 @@ because API hosts are not in the media list, and it keeps working when Didit ren
 **Why there is no evidence store.** The bank already has an append-only store inside its
 perimeter and owns the retention policy. A second copy of biometrics in a new service adds
 breach surface and no capability.
+
+**Why the relay does not own the fallback.** It is one module that answers one question.
+If verification fails it returns an error and stops; whether the bank then completes the
+mandate by OTP, retries, or declines outright belongs to the bank, which holds the risk
+and the customer relationship. A relay that advertises a fallback is a relay that thinks
+it owns a decision it does not.
 
 ## What I would change before this carried real traffic
 
@@ -151,37 +159,34 @@ which happened in `requestIdSource` (`"inbound"` or `"generated"`).
 All errors use one envelope:
 
 ```json
-{ "error": { "code": "UPSTREAM_TIMEOUT", "message": "...", "retryable": true, "fallbackToOtp": true } }
+{ "error": { "code": "UPSTREAM_TIMEOUT", "message": "...", "retryable": true } }
 ```
 
-`retryable` describes whether the same request may succeed on retry.
-`fallbackToOtp` describes whether the caller can still complete the authorization
-another way, via an OTP challenge. Those are independent: `INTERNAL` is not
-retryable (the same request would hit the same bug), but it still sets
-`fallbackToOtp: true`, because an unexpected bug inside the relay must never be
-the reason a customer cannot authorize a debit.
+`retryable` describes whether the same request may succeed on retry. Whether a
+failed verification ends the attempt, is retried, or is completed another way
+is the caller's decision; the relay does not model it.
 
-| Code | HTTP | `retryable` | `fallbackToOtp` |
-| - | - | - | - |
-| `UPSTREAM_TIMEOUT` | 504 | true | true |
-| `UPSTREAM_ERROR` | 502 | true | true |
-| `UPSTREAM_RATE_LIMITED` | 429 | true | true |
-| `PAYLOAD_TOO_LARGE` | 413 | false | false |
-| `BAD_REQUEST` | 400 | false | false |
-| `NOT_FOUND` | 404 | false | false |
-| `UNAUTHORIZED` | 401 | false | false |
-| `INTERNAL` | 500 | false | true |
-| `NOT_IMPLEMENTED` | 501 | false | false |
-| `MEDIA_EXPIRED` | 410 | false | false |
+| Code | HTTP | `retryable` |
+| - | - | - |
+| `UPSTREAM_TIMEOUT` | 504 | true |
+| `UPSTREAM_ERROR` | 502 | true |
+| `UPSTREAM_RATE_LIMITED` | 429 | true |
+| `PAYLOAD_TOO_LARGE` | 413 | false |
+| `BAD_REQUEST` | 400 | false |
+| `NOT_FOUND` | 404 | false |
+| `UNAUTHORIZED` | 401 | false |
+| `INTERNAL` | 500 | false |
+| `NOT_IMPLEMENTED` | 501 | false |
+| `MEDIA_EXPIRED` | 410 | false |
 
 `NOT_IMPLEMENTED` is retained from phase 0; nothing returns it now that the
 proxy replaced the `/v3/*` stub.
 
 `UNAUTHORIZED` needs one footnote: the row above is the taxonomy default for
 a caller authentication failure. A `401` from upstream instead means the
-relay's own key is wrong, so the proxy answers the same code and status but
-with `fallbackToOtp: true` — our misconfiguration must never be the reason
-a customer cannot authorize a debit.
+relay's own key is wrong, and the proxy answers the same code and status —
+the caller cannot distinguish the two, and the log line is what tells an
+operator which one happened.
 
 ## Proxy
 

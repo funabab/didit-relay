@@ -58,12 +58,11 @@ describe("proxy early rejects (no upstream call, no network)", () => {
     const res = await app.fetch(get("/v3/%2e%2e%2f%2e%2e%2fetc/passwd"));
     expect(res.status).toBe(404);
     const body = (await res.json()) as {
-      error: { code: string; message: string; retryable: boolean; fallbackToOtp: boolean };
+      error: { code: string; message: string; retryable: boolean };
     };
     expect(body.error.code).toBe("NOT_FOUND");
     expect(typeof body.error.message).toBe("string");
     expect(typeof body.error.retryable).toBe("boolean");
-    expect(typeof body.error.fallbackToOtp).toBe("boolean");
   });
 
   test("a /v3 body over the cap returns 413 without calling upstream", async () => {

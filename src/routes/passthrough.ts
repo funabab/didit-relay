@@ -7,9 +7,9 @@
  * Why this shape: the relay injects the API key (the caller never holds
  * it), enforces a per-method time budget for the whole exchange (reads
  * under `UPSTREAM_TIMEOUT_MS`, writes under `UPSTREAM_WRITE_TIMEOUT_MS`),
- * and guarantees a failure here never blocks a debit — every outcome
- * either carries Didit's own answer or maps into the envelope with
- * `fallbackToOtp` set where the caller can still complete via OTP.
+ * and maps every failure into the error envelope, so every outcome
+ * either carries Didit's own answer or a stable `code`, `message` and
+ * `retryable` triple.
  *
  * Pipeline order is fixed: path safety, body size, idempotency (POST),
  * forward, retry (reads only), map-or-stream. Each step short-circuits;
@@ -20,7 +20,7 @@
  * URLs inside `2xx` JSON bodies (Phase 2) and otherwise proxies bytes.
  */
 import type { Config } from "../config";
-import { AppError, type ErrorCode, type ErrorFlagOverrides } from "../http/errors";
+import { AppError, type ErrorCode } from "../http/errors";
 import type { Logger } from "../logging/logger";
 import { rewriteJsonBody } from "../media/rewrite";
 import {
@@ -561,12 +561,11 @@ async function mapUpstreamResponse(upstream: Response, input: MapInput): Promise
     return { response, upstreamStatus: status, upstreamMs, attempts, replayed: false };
   }
   if (status === 401) {
-    // Our key is wrong, not the caller's request: same code and status
-    // as a caller authentication failure, but the caller may still
-    // complete via OTP. The log carries no key material.
-    return failUpstream(upstream, input, "UNAUTHORIZED", "upstream rejected the relay credentials", {
-      flags: { fallbackToOtp: true },
-    });
+    // Our key is wrong, not the caller's request, but the caller cannot
+    // distinguish this from a caller authentication failure: same code
+    // and status. The log line is what tells an operator which one
+    // happened. The log carries no key material.
+    return failUpstream(upstream, input, "UNAUTHORIZED", "upstream rejected the relay credentials");
   }
   if (status >= 400) {
     const contentType = upstream.headers.get("content-type");
@@ -647,7 +646,6 @@ async function mapUpstreamResponse(upstream: Response, input: MapInput): Promise
 
 interface FailOptions {
   logExtra?: Record<string, unknown>;
-  flags?: ErrorFlagOverrides;
 }
 
 async function failUpstream(
@@ -666,7 +664,7 @@ async function failUpstream(
     ...options?.logExtra,
   });
   return {
-    response: new AppError(code, message, options?.flags).toResponse(),
+    response: new AppError(code, message).toResponse(),
     upstreamStatus: upstream.status,
     upstreamMs: input.upstreamMs,
     attempts: input.attempts,

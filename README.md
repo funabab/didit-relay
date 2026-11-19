@@ -6,13 +6,13 @@ One point of scope, because it is easy to get backwards: Didit does not authoriz
 mandates. The bank's module decides whether a direct debit is authorized. Today it asks
 the customer for an OTP; the change this relay supports is to replace that OTP with
 liveness plus a face match against the portrait the bank already holds, using Didit's
-`biometric_authentication` workflow. Didit answers one question — is this the person
-behind the mandate — and the mandate decision stays where it was. The relay
+`biometric_authentication` workflow. Didit answers one question: is this the person
+behind the mandate. The mandate decision stays where it was. The relay
 implements neither side of that policy: it carries the portrait in and the
 decision out.
 
 It exists for one reason: banks whitelist the IPs of environments they already have a
-relationship with. A third-party SaaS dependency is a different conversation — a new
+relationship with. A third-party SaaS dependency is a different conversation: a new
 vendor's egress addresses go through security review, and the answer is often no. The
 relay means the bank talks to infrastructure it already trusts, and the credential stays
 on our side of the boundary.
@@ -53,7 +53,7 @@ is ours to forward.
 
 **Why idempotency is in-process and what that costs.** A retried create with a freshly
 captured portrait is a duplicate authorization. The store is a `Map` with a TTL and a cap,
-which is correct for one instance and wrong for two — see what I would change below.
+which is correct for one instance and wrong for two. See what I would change below.
 
 **Why media URLs are rewritten by host, not by field name.** No completed session has been
 observed yet, so the field names are unknown. Matching the host cannot rewrite an API URL,
@@ -184,8 +184,8 @@ proxy replaced the `/v3/*` stub.
 
 `UNAUTHORIZED` needs one footnote: the row above is the taxonomy default for
 a caller authentication failure. A `401` from upstream instead means the
-relay's own key is wrong, and the proxy answers the same code and status —
-the caller cannot distinguish the two, and the log line is what tells an
+relay's own key is wrong, and the proxy answers the same code and status.
+The caller cannot distinguish the two, and the log line is what tells an
 operator which one happened.
 
 ## Proxy
@@ -211,7 +211,7 @@ needs a rule for a third-party vendor's addresses. The proxy:
   for the whole exchange, covering time-to-response-headers; expiry
   answers `504 UPSTREAM_TIMEOUT`;
 - retries `GET`/`HEAD` at most once, only on transport errors and upstream
-  `502`/`503`/`504`, only with at least half the budget left — and never
+  `502`/`503`/`504`, only with at least half the budget left, and never
   retries `POST`, `PATCH`, `DELETE` or `429`;
 - passes JSON upstream `4xx` (other than `401`/`429`) through verbatim, so
   the caller sees Didit's own field errors; maps transport failures,
@@ -219,7 +219,7 @@ needs a rule for a third-party vendor's addresses. The proxy:
   `4xx` (Django answers unknown `/v3/` paths with an HTML page) to
   `UPSTREAM_ERROR` rather than handing a JSON client a page of HTML;
 - streams response bodies back without buffering, forwarding only
-  `content-type`, `content-length`, `retry-after` and `location` — except
+  `content-type`, `content-length`, `retry-after` and `location`, except
   `2xx` JSON bodies, which are buffered for media-URL rewriting when
   rewriting is active (see "Media" below).
 
@@ -263,7 +263,7 @@ responses have their media URLs rewritten to
 
 Rewriting is shape-agnostic on purpose. It was written before a completed
 session had ever been observed, so the field names carrying media URLs were
-unknown. Rewriting matches by host instead — any string value that parses as
+unknown. Rewriting matches by host instead: any string value that parses as
 an absolute `http(s)` URL whose host is in `DIDIT_MEDIA_HOSTS` is replaced,
 whatever field holds it. API hosts are never in that list, so an API URL
 cannot be rewritten. Only `2xx` `application/json` responses are
@@ -302,7 +302,7 @@ it entirely, streaming every request upstream and writing nothing.
 Observed in a completed biometric session (2026-11-19): the media fields are
 `liveness_checks[].reference_image`, `liveness_checks[].video_url` and
 `face_matches[].target_image`, all on a per-environment S3 bucket in `eu-west-1`
-(`service-didit-verification-production-<hash>.s3.amazonaws.com` — the bucket says
+(`service-didit-verification-production-<hash>.s3.amazonaws.com`, which says
 "production" even for sandbox sessions, so the host must be configured per environment).
 Rewriting matches by host, so a field renamed or added later keeps working without a code
 change; only the host allowlist needs to be right.

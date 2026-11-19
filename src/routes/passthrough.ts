@@ -495,8 +495,8 @@ async function forwardWithRetry(
 
 /**
  * Allowlisted inbound headers plus injected credentials and correlation.
- * Everything else — caller keys, cookies, content-length, forwarding
- * headers, hop-by-hop headers — is dropped by construction.
+ * Everything else (caller keys, cookies, content-length, forwarding
+ * headers, hop-by-hop headers) is dropped by construction.
  */
 function buildUpstreamHeaders(inbound: Headers, ctx: ProxyContext): Headers {
   const out = new Headers();
@@ -530,7 +530,7 @@ interface MapInput {
 
 /**
  * Map the upstream outcome or stream it back. JSON `4xx` (other than 401
- * and 429) passes through verbatim — status, body, content-type — because
+ * and 429) passes through verbatim (status, body, content-type) because
  * those are validation answers about the caller's own request. Everything
  * else becomes the envelope. Bodies are streamed without buffering except
  * `2xx` responses that need an idempotency record or media-URL rewriting.
@@ -612,7 +612,7 @@ async function mapUpstreamResponse(upstream: Response, input: MapInput): Promise
     }
     if (input.slot !== null) {
       // Recording is a buffering path: the bytes are both the response
-      // and the replay source, so the record keeps a copy — of the
+      // and the replay source, so the record keeps a copy of the
       // rewritten bytes, or a replay would hand back upstream URLs.
       ctx.store.complete(input.slot.path, input.slot.key, input.slot.token, {
         status,

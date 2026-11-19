@@ -2,6 +2,13 @@
 
 Relay service between a bank-hosted mandate authorization module and Didit's identity API.
 
+One point of scope, because it is easy to get backwards: Didit does not authorize
+mandates. The bank's module decides whether a direct debit is authorized. Today it asks
+the customer for an OTP; the change this relay supports is to replace that OTP with
+liveness plus a face match against the portrait the bank already holds, using Didit's
+`biometric_authentication` workflow. Didit answers one question — is this the person
+behind the mandate — and the mandate decision stays where it was.
+
 It exists for one reason: a bank will allowlist one inbound IP and two domains it already
 trusts, and nothing else. The relay makes that possible.
 

@@ -17,17 +17,40 @@ vendor's egress addresses go through security review, and the answer is often no
 relay means the bank talks to infrastructure it already trusts, and the credential stays
 on our side of the boundary.
 
-Three jobs, built in phases:
+Three jobs were scoped. Two are built here:
 
-1. Proxy Didit API calls so the bank only ever talks to `api.<domain>`.
+1. Proxy Didit API calls so the bank only ever calls a host it already trusts.
 2. Re-serve short-lived presigned biometric media from `assets.<domain>`.
-3. Store per-authorization evidence packs append-only, inside the bank's perimeter.
+
+The third, storing per-authorization evidence packs, was dropped rather than deferred: the
+bank's own append-only store already holds them and owns the retention policy. See "Why
+there is no evidence store" below.
 
 Status: Phase 2 media. `GET`, `POST`, `PATCH` and `DELETE` under `/v3/*` are proxied
 to `DIDIT_API_BASE` with key injection, per-method timeout budgets, read-only retry
 and per-path `POST` idempotency; presigned media URLs in `2xx` JSON responses are
 rewritten to signed links served from this relay at `GET /m/{token}`. Evidence
 storage (Phase 3) and webhooks are not implemented.
+
+## How the pieces fit
+
+```mermaid
+flowchart LR
+  B["Bank's mandate module"]
+  R["Relay<br/>one host, one key"]
+  D["Didit API"]
+  S["Presigned media<br/>4 h"]
+
+  B -->|"create, poll"| R
+  R -->|"API key injected"| D
+  D -->|"decision, presigned URLs"| R
+  R -->|"media rewritten to /m/{token}"| B
+  B -->|"GET /m/{token}"| R
+  R -->|"cache miss"| S
+```
+
+The bank's module calls one host. It never receives a Didit hostname, and it never holds
+the API key.
 
 ## Design decisions worth defending
 

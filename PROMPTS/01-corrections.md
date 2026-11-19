@@ -1,5 +1,9 @@
 # Phase 0 corrections
 
+> **Superseded in part** by `05-no-fallback.md`: the error envelope no longer carries
+> `fallbackToOtp`. The relay reports `code`, `message` and `retryable`, and leaves the
+> caller's next step alone.
+
 Follow-up to `PROMPTS/00-scaffold.md`. The scaffold is accepted in shape: layout, error envelope,
 redaction approach, tests and container all match the spec. Review found seven defects, four of them
 in code you wrote, three in packaging. Fix all seven. Do not add features that are not listed here.

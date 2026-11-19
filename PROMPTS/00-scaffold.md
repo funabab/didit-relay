@@ -1,5 +1,9 @@
 # Phase 0: scaffold
 
+> **Superseded in part** by `05-no-fallback.md`: the error envelope no longer carries
+> `fallbackToOtp`. The relay reports `code`, `message` and `retryable`, and leaves the
+> caller's next step alone.
+
 You are building the skeleton of `didit-relay`, a relay service. Build **only** what is listed
 under "Scope". Do not implement the Didit proxy yet.
 

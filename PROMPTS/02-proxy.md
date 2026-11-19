@@ -1,5 +1,9 @@
 # Phase 1: Didit proxy
 
+> **Superseded in part** by `05-no-fallback.md`: the error envelope no longer carries
+> `fallbackToOtp`. The relay reports `code`, `message` and `retryable`, and leaves the
+> caller's next step alone.
+
 Replace the `/v3/*` stub with a real proxy to the Didit verification API.
 
 The bank's authorization module can reach exactly one host. Every Didit call it makes

@@ -1,5 +1,9 @@
 # Phase 2: re-serve presigned biometric media
 
+> **Superseded in part** by `05-no-fallback.md`: the error envelope no longer carries
+> `fallbackToOtp`. The relay reports `code`, `message` and `retryable`, and leaves the
+> caller's next step alone.
+
 Didit returns biometric media (face crops, liveness frames, document images) as presigned
 URLs on a host that is separate from the API and undocumented, valid for roughly an hour.
 The bank whitelists origins of partners it already has a relationship with; a third-party
